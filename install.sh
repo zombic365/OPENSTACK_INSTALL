@@ -1,6 +1,7 @@
 #!/bin/bash
-SCRIPT_DIR=$(dirname "$0")
-source ${SCRIPT_DIR}/lib/*
+SCRIPT_DIR=$(dirname $(realpath $0))
+echo "source ${SCRIPT_DIR}/lib/*"
+source ${SCRIPT_DIR}/lib/logger
 
 function help_usage() {
     cat <<EOF

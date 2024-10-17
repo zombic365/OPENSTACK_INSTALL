@@ -2,7 +2,7 @@
 
 function run_cmd() {
     _CMD=$@
-    log_msg "CMD" "$@"    
+    log_msg "CMD" "$@"
     eval "${_CMD}" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
         log_msg "OK"
@@ -66,7 +66,19 @@ function set_opts() {
     shift $((OPTIND-1))
 }
 
-functin install_pkgs() {
+function install_ntp() {
+    run_cmd "apt install -y chrony"
+    if [ $? -eq 0 ]; then
+        if [ ! -f /etc/chrony/chrony.conf.org ]; then
+            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony.conf.org"
+        else
+        _RUN_TODAY=$(date "+%y%m%d")
+        _RUN_TIME=$(date "+%H:%M:%S.%3N")
+    
+        _LOG_TIME="${_RUN_TODAY} ${_RUN_TIME}"
+            read -p "Already file 
+
+        fi
 
 }
 
@@ -79,18 +91,13 @@ main() {
     [ $# -eq 0 ] && help_usage
     set_opts "$@"
 
-    if [ ! -d ${ELK_PATH} ]; then
-        log_msg "ERROR" "Pleaase check path ${ELK_PATH}"
-        exit 1
-    else    
-        setup_config
-        case ${MODE} in
-            "install" )
-                download_pkgs
-            ;;
-            "remove"  ) echo "remote"  ; exit 0 ;;
-            *         ) help_usage     ; exit 0 ;;
-        esac
-    fi
+    setup_config
+    case ${MODE} in
+        "install" )
+            install_ntp
+        ;;
+        "remove"  ) echo "remote"  ; exit 0 ;;
+        *         ) help_usage     ; exit 0 ;;
+    esac
 }
 main $*
