@@ -44,8 +44,6 @@ function set_opts() {
 function install_ntp() {
     check_pkg "chrony"
     if [ $? -eq  0 ]; then
-        echo "ok"
-        exit 1
         run_cmd "${PKG_CMD[0]} install -y chrony"
         if [ $? -eq 0 ]; then
             if [ ! -d /etc/chrony/chrony_bak ]; then
@@ -74,8 +72,6 @@ EOF"
             return 1
         fi
     else
-        echo "fail"
-        exit 1
         log_msg "SKIP" "Already install chrony."
     fi
 }
