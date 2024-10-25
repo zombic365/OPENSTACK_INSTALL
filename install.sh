@@ -43,7 +43,7 @@ function set_opts() {
 
 function install_ntp() {
     check_pkg "chrony"
-    if [ $? -eq  0 ];
+    if [ $? -eq  0 ]; then
         echo "ok"
         exit 1
         run_cmd "${PKG_CMD[0]} install -y chrony"
@@ -109,7 +109,6 @@ main() {
 
     OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
     OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
-
 
     case ${OS_NAME} in
         centos | Centos | CentOS | rocky | Rocky )
