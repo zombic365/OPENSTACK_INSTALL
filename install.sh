@@ -42,28 +42,50 @@ function set_opts() {
 }
 
 function install_ntp() {
-    run_cmd "apt install -y chrony"
-    if [ $? -eq 0 ]; then
-        if [ ! -d /etc/chrony/chrony_bak ]; then
-            run_cmd "mkdir /etc/chrony/chrony_bak"
-        fi
+    check_pkg "chrony"
+    if [ $? -eq  0 ];
+        echo "ok"
+        exit 1
+        run_cmd "${PKG_CMD[0]} install -y chrony"
+        if [ $? -eq 0 ]; then
+            if [ ! -d /etc/chrony/chrony_bak ]; then
+                run_cmd "mkdir /etc/chrony/chrony_bak"
+            fi
 
-        if [ ! -f /etc/chrony/chrony.conf.org ]; then
-            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
-        fi
-        
-        if [ ! -f /etc/chrony/chrony.conf.bak ]; then
-            _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
-            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
-            run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
-        fi
-    fi
+            if [ ! -f /etc/chrony/chrony.conf.org ]; then
+                run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
+            fi
+            
+            if [ ! -f /etc/chrony/chrony.conf.bak ]; then
+                _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
+                run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
+                run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
+            fi
 
-    run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
-    run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
+            run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
+            run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
+
 server 0.kr.pool.ntp.org prefer iburst minpoll 4 maxpoll 4
 allow ${OPENSTACK_MGMT_NET}
 EOF"
+            run_cmd "systemctl enable --now chrony"
+        else
+            log_msg "ERROR" "chrony install failed."
+            return 1
+        fi
+    else
+        echo "fail"
+        exit 1
+        log_msg "SKIP" "Already install chrony."
+    fi
+}
+
+function install_openstack_client() {
+
+    # case ${OPENSTACK_VERSION} in
+    #     yoga | Yoga | YOGA )
+    #         case ${OS_VERSION}
+    # esac
 }
 
 main() {
@@ -88,11 +110,18 @@ main() {
     OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
     OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
 
-    # case ${OS_NAME} in
-    #     ubuntu | Ubuntu ) ;;
-    #     Centos | CentOS | Rocky Linux ) ;;
-    # esac
+
+    case ${OS_NAME} in
+        centos | Centos | CentOS | rocky | Rocky )
+            PKG_CMD=("yum" "rpm")
+        ;;
+        ubuntu | Ubuntu )
+            PKG_CMD=("apt" "dpkg")
+        ;;
+    esac
+
     install_ntp
+    install_openstack_client
 }
 
 main $*

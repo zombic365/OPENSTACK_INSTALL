@@ -11,3 +11,17 @@ function run_cmd() {
         return 1
     fi
 }
+
+function check_pkg() {
+    _PKG_NAME=$1
+    case ${PKG_CMD[1]} in
+        # rpm ) ;;
+        dpkg ) 
+            if ${PKG_CMD[1]} -s ${_PKG_NAME} >/dev/null 2&1; then
+                return 1
+            else
+                return 0
+            fi
+        ;;
+    esac
+}
