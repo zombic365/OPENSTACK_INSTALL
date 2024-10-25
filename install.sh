@@ -1,7 +1,13 @@
 #!/bin/bash
+
+# https://medium.com/@rohitdoshi9/automated-backup-and-rotation-in-linux-12ea9c545f12
+
 SCRIPT_DIR=$(dirname $(realpath $0))
-echo "source ${SCRIPT_DIR}/lib/*"
-source ${SCRIPT_DIR}/lib/logger
+
+for _FILE in $(ls ${SCRIPT_DIR}/lib); do
+    source ${SCRIPT_DIR}/lib/${_FILE}
+    echo "source ${SCRIPT_DIR}/lib/${_FILE}"
+done
 
 function help_usage() {
     cat <<EOF
@@ -35,11 +41,39 @@ function set_opts() {
     shift $((OPTIND-1))
 }
 
+function install_ntp() {
+    run_cmd "apt install -y chrony"
+    if [ $? -eq 0 ]; then
+        if [ ! -d /etc/chrony/chrony_bak ]; then
+            run_cmd "mkdir /etc/chrony/chrony_bak"
+        fi
+
+        if [ ! -f /etc/chrony/chrony.conf.org ]; then
+            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
+        fi
+        
+        if [ ! -f /etc/chrony/chrony.conf.bak ]; then
+            _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
+            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
+            run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
+        fi
+    fi
+
+    run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
+    run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
+server 0.kr.pool.ntp.org prefer iburst minpoll 4 maxpoll 4
+allow ${OPENSTACK_MGMT_NET}
+EOF"
+}
+
 main() {
     [ $# -eq 0 ] && help_usage
     set_opts "$@"
 
-    log_msg "CMD" "test"
-    exit 0
+    OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
+    OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
+
+    install_ntp
+
 }
 main $*
