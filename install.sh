@@ -44,6 +44,8 @@ function set_opts() {
 function install_ntp() {
     check_pkg "chrony"
     if [ $? -eq  0 ]; then
+        echo "${PKG_CMD[@]}"
+        exit 0
         run_cmd "${PKG_CMD[0]} install -y chrony"
         if [ $? -eq 0 ]; then
             if [ ! -d /etc/chrony/chrony_bak ]; then
@@ -77,7 +79,7 @@ EOF"
 }
 
 function install_openstack_client() {
-    eixt 0
+    exit 0
     # case ${OPENSTACK_VERSION} in
     #     yoga | Yoga | YOGA )
     #         case ${OS_VERSION}
