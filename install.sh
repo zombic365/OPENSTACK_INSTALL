@@ -70,6 +70,18 @@ main() {
     [ $# -eq 0 ] && help_usage
     set_opts "$@"
 
+    if [ -n ${CONF_PATH} ]; then
+        if [ -f ${CONF_PATH} ]; then
+            source ${CONF_PATH}
+        else
+            log_msg "ERROR" "Not found config file [ ${CONF_PATH} ]."
+            eixt 1
+        fi
+    else
+        log_msg "ERROR" "Reserved config file option"
+        eixt 1
+    fi
+
     OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
     OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
 
