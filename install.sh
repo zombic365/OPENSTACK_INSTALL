@@ -1,12 +1,10 @@
 #!/bin/bash
-
 # https://medium.com/@rohitdoshi9/automated-backup-and-rotation-in-linux-12ea9c545f12
 
 SCRIPT_DIR=$(dirname $(realpath $0))
 
 for _FILE in $(ls ${SCRIPT_DIR}/lib); do
     source ${SCRIPT_DIR}/lib/${_FILE}
-    echo "source ${SCRIPT_DIR}/lib/${_FILE}"
 done
 
 function help_usage() {
@@ -15,14 +13,15 @@ Usage: $0 [Options]
 Options:
 -i, --install             : Install Openstack
 -r, --remove              : Remove Openstack
+-m, --mode   [ controller or compute ] : Openstack install mode
 -c, --config [ Path ]     : Openstack setup config file path
 EOF
     exit 0
 }
 
 function set_opts() {
-    arguments=$(getopt --options c:hir \
-    --longoptions config:,help,install,remove \
+    arguments=$(getopt --options c:m:hir \
+    --longoptions config:,mode:,help,install,remove \
     --name $(basename $0) \
     -- "$@")
 
@@ -31,6 +30,7 @@ function set_opts() {
         case "$1" in
             -i | --install  ) MODE="install"; shift   ;;
             -r | --remove   ) MODE="remove" ; shift   ;;
+            -m | --mode     ) SVR_MODE=$2   ; shift 2 ;;
             -c | --config   ) CONF_PATH=$2  ; shift 2 ;;
             -h | --help     ) help_usage              ;;
             --              ) shift         ; break   ;;
@@ -43,54 +43,111 @@ function set_opts() {
 
 function install_ntp() {
     check_pkg "chrony"
-    if [ $? -eq  0 ]; then
-        echo "${PKG_CMD[@]}"
-        exit 0
-        run_cmd "${PKG_CMD[0]} install -y chrony"
-        if [ $? -eq 0 ]; then
-            if [ ! -d /etc/chrony/chrony_bak ]; then
-                run_cmd "mkdir /etc/chrony/chrony_bak"
-            fi
+    if [ $? -eq 0 ]; then
+        if [ ! -d /etc/chrony/chrony_bak ]; then
+            run_cmd "mkdir /etc/chrony/chrony_bak"
+        fi
 
-            if [ ! -f /etc/chrony/chrony.conf.org ]; then
-                run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
-            fi
-            
-            if [ ! -f /etc/chrony/chrony.conf.bak ]; then
-                _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
-                run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
-                run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
-            fi
+        if [ ! -f /etc/chrony/chrony.conf.org ]; then
+            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
+        fi
+        
+        if [ ! -f /etc/chrony/chrony.conf.bak ]; then
+            _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
+            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
+            run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
+        fi
 
-            run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
-            run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
+        run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
+        run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
 
 server 0.kr.pool.ntp.org prefer iburst minpoll 4 maxpoll 4
 allow ${OPENSTACK_MGMT_NET}
 EOF"
-            run_cmd "systemctl enable --now chrony"
-        else
-            log_msg "ERROR" "chrony install failed."
-            return 1
-        fi
-    else
-        log_msg "SKIP" "Already install chrony."
+        run_cmd "systemctl enable --now chrony"
     fi
 }
 
 function install_openstack_client() {
-    exit 0
-    # case ${OPENSTACK_VERSION} in
-    #     yoga | Yoga | YOGA )
-    #         case ${OS_VERSION}
-    # esac
+    _OPENSTACK_VERSION=$(echo "${OPENSTACK_VERSION}" |tr '[A-Z]' '[a-z]')
+    case ${PKG_CMD[0]} in
+        yum )
+            run_cmd "${PKG_CMD[2]}-${_OPENSTACK_VERSION}"
+        ;;
+        apt )
+            if [[ ${OS_VERSION} =~ "22.04" ]]; then
+                log_msg "SKIP" "Already suported Ubuntu 22.04"
+            else
+                run_cmd "${PKG_CMD[2]}:${_OPENSTACK_VERSION}"
+            fi
+        ;;
+    esac
+
+    if [ $? -eq 0 ]; then
+        check_pkg "python3-openstackclient"
+        if [ $? -eq 0 ]; then
+            return 0
+        fi
+    fi
+}
+
+function install_mysql() {
+    if [ ${SVR_MODE} == "controller" ]; then
+        case ${PKG_CMD[0]} in
+            yum )
+                # run_cmd "${PKG_CMD[2]}-${_OPENSTACK_VERSION}"
+                log_msg "ERRIR" "No supported script. for upeer of Ubuntu 20.04 "
+                exit 1
+            ;;
+            apt )
+                if [[ ${OS_VERSION} =~ "18.04" ]] || [[ ${OS_VERSION} =~ "16.04" ]]; then
+                    log_msg "ERRIR" "No supported script. for upeer of Ubuntu 20.04 "
+                    exit 1
+                elif [[ ${OS_VERSION} =~ 2[0-4].04 ]]; then
+                    check_pkg "mariadb-server" "python3-pymysql"
+                    if [ $? -eq 0 ]; then
+                        _install=0
+                    else
+                        exit 1
+                    fi
+                else
+                    log_msg "ERRIR" "No supported script. for upeer of Ubuntu 20.04 "
+                    exit 1
+                fi
+            ;;
+        esac
+
+    elif [ ${SVR_MODE} == "compute" ]; then
+        log_msg "SKIP" "Skip install mysql."
+        return 0
+    else
+        log_msg "FAIL" "Please check option -m [ supported 'controller' or 'compute' ]."
+        help_usage
+        return 0 
+    fi
+
+    if [ ${_install} -eq 0 ]; then
+        if [ ! -f /etc/mysql/mariadb.conf.d/99-openstack.cnf ]; then
+            run_cmd "cat <<\EOF >/etc/mysql/mariadb.conf.d/99-openstack.cnf
+[mysqld]
+bind-address = ${OPENSTACK_CONTROLLER_IP}
+
+default-storage-engine = innodb
+innodb_file_per_table = on
+max_connections = 4096
+collation-server = utf8_general_ci
+character-set-server = utf8
+EOF"
+       fi
+    fi
 }
 
 main() {
     [ $# -eq 0 ] && help_usage
     set_opts "$@"
 
-    if [ -n ${CONF_PATH} ]; then
+    
+    if [[ -n ${CONF_PATH} ]] && [[ -n ${SVR_MODE} ]]; then
         if [ -f ${CONF_PATH} ]; then
             source ${CONF_PATH}
             if [ ! -d ${SCRIPT_DIR_LOG} ]; then
@@ -101,24 +158,26 @@ main() {
             eixt 1
         fi
     else
-        log_msg "ERROR" "Reserved config file option"
-        eixt 1
+        log_msg "ERROR" "Reserved [ -c and -m ] option."
+        help_usage
+        exit 1
     fi
 
     OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
     OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
 
     case ${OS_NAME} in
-        centos | Centos | CentOS | rocky | Rocky )
-            PKG_CMD=("yum" "rpm")
+        *centos* | *Centos* | *CentOS* | *rocky* | *Rocky* )
+            PKG_CMD=('yum' 'rpm' "yum entos-release-openstack")
         ;;
-        ubuntu | Ubuntu )
-            PKG_CMD=("apt" "dpkg")
+        *ubuntu* | *Ubuntu* )
+            PKG_CMD=('apt' 'dpkg' "add-apt-repository cloud-archive")
         ;;
     esac
 
     install_ntp
     install_openstack_client
+    install_mysql
 }
 
 main $*

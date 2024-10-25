@@ -13,21 +13,45 @@ function run_cmd() {
 }
 
 function check_pkg() {
-    _PKG_NAME=$1
-    case ${PKG_CMD[1]} in
-        rpm )
-            if ${PKG_CMD[1]} -q ${_PKG_NAME} >/dev/null 2&1; then
-                return 1
+    _PKG_NAME=$@
+    _PKG_NAME_NUM=${#_PKG_NAME[@]}
+
+    for _PKG in ${_PKG_NAME[@]}; do
+        _PKG_NAME_NUM=$(expr ${_PKG_NAME_NUM} - 1)
+        case ${PKG_CMD[1]} in
+            rpm )
+                if ! ${PKG_CMD[1]} -q ${_PKG_NAME} >/dev/null 2>&1; then            
+                    _install=0
+                else
+                    _install=1
+                fi
+            ;;
+            dpkg )
+                if ! ${PKG_CMD[1]} -s ${_PKG_NAME} >/dev/null 2>&1; then
+                    _install=0
+                else
+                    _install=1
+                fi
+            ;;
+        esac
+
+        if [ ${_install} -eq 0 ]; then
+            run_cmd "${PKG_CMD[0]} install -y ${_PKG}"
+            if [ $? -eq 0 ]; then
+                if [ ${_PKG_NAME_NUM} -eq 0 ]; then 
+                    return 0
+                else
+                    continue
+                fi
             else
-                return 0
+                log_msg "ERROR" "Package install fail ${_PKG}."
+                exit 1
             fi
-        ;;
-        dpkg ) 
-            if ${PKG_CMD[1]} -s ${_PKG_NAME} >/dev/null 2&1; then
-                return 1
-            else
-                return 0
-            fi
-        ;;
-    esac
+        elif [ ${_install} -eq 1 ]; then
+            log_msg "SKIP" "Already install ${_PKG}."
+        else
+            log_msg "ERROR" "Aboart bug"
+            exit 1
+        fi
+    done
 }
