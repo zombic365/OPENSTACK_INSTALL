@@ -16,7 +16,7 @@ function check_pkg() {
     _PKG_NAME=$1
     case ${PKG_CMD[1]} in
         rpm )
-            if ${PKG_CMD[1]} -qa ${_PKG_NAME} >/dev/null 2&1; then
+            if ${PKG_CMD[1]} -q ${_PKG_NAME} >/dev/null 2&1; then
                 return 1
             else
                 return 0
