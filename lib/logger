@@ -7,12 +7,12 @@ log_msg() {
 
     # printf "%-*s | %s\n" ${STR_LEGNTH} "Server Serial" "Unknown" |tee -a ${LOG_FILE} >/dev/null
     case ${_LOG_TYPE} in
-        "CMD"   ) printf "[ ${BWhite}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}           ;;
-        "OK"    ) printf "[ ${BGreen}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}           ;;
-        "FAIL"  ) printf "[ ${BRed}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}             ;;
-        "INFO"  ) printf "[ ${BWhite}%-*s${ColorOff} ] %s %s\n" 5 "${BWhite}${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}  ;;
-        "WARR"  ) printf "[ ${BPurple}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}          ;;
-        "SKIP"  ) printf "[ ${BPCyan}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}           ;;
-        "ERROR" ) printf "[ ${BRed}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" ${_LOG_MSG}             ;;
+        "CMD"   ) printf "[ ${BWhite}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"           ;;
+        "OK"    ) printf "[ ${BGreen}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"           ;;
+        "FAIL"  ) printf "[ ${BRed}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"             ;;
+        "INFO"  ) printf "[ ${BWhite}%-*s${ColorOff} ] %s %s\n" 5 "${BWhite}${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"  ;;
+        "WARR"  ) printf "[ ${BPurple}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"          ;;
+        "SKIP"  ) printf "[ ${BPCyan}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"           ;;
+        "ERROR" ) printf "[ ${BRed}%-*s${ColorOff} ] %s %s\n" 5 "${_LOG_TYPE}" "[ ${_TIMESTAMP} ]" "${_LOG_MSG}"             ;;
     esac
 }
