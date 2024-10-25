@@ -73,7 +73,11 @@ main() {
     OS_NAME=$(grep '^NAME=' /etc/os-release |cut -d'=' -f2)
     OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release |cut -d'=' -f2)
 
+    # case ${OS_NAME} in
+    #     ubuntu | Ubuntu ) ;;
+    #     Centos | CentOS | Rocky Linux ) ;;
+    # esac
     install_ntp
-
 }
+
 main $*
