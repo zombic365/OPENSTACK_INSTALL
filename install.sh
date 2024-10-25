@@ -81,7 +81,7 @@ EOF"
 }
 
 function install_openstack_client() {
-
+    eixt 0
     # case ${OPENSTACK_VERSION} in
     #     yoga | Yoga | YOGA )
     #         case ${OS_VERSION}
