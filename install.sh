@@ -9,10 +9,6 @@ for _FILE in $(ls ${SCRIPT_DIR}/lib); do
     echo "source ${SCRIPT_DIR}/lib/${_FILE}"
 done
 
-if [ ! -d ${SCRIPT_DIR_LOG} ]; then
-    run_cmd "mkdir ${SCRIPT_DIR_LOG}"
-fi
-
 function help_usage() {
     cat <<EOF
 Usage: $0 [Options]
@@ -77,6 +73,9 @@ main() {
     if [ -n ${CONF_PATH} ]; then
         if [ -f ${CONF_PATH} ]; then
             source ${CONF_PATH}
+            if [ ! -d ${SCRIPT_DIR_LOG} ]; then
+                run_cmd "mkdir ${SCRIPT_DIR_LOG}"
+            fi
         else
             log_msg "ERROR" "Not found config file [ ${CONF_PATH} ]."
             eixt 1
