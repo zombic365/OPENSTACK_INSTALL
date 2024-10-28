@@ -49,6 +49,7 @@ function check_pkg() {
             fi
         elif [ ${_install} -eq 1 ]; then
             log_msg "SKIP" "Already install ${_PKG}."
+            return 1
         else
             log_msg "ERROR" "Aboart bug"
             exit 1

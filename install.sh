@@ -44,18 +44,8 @@ function set_opts() {
 function install_ntp() {
     check_pkg "chrony"
     if [ $? -eq 0 ]; then
-        if [ ! -d /etc/chrony/chrony_bak ]; then
-            run_cmd "mkdir /etc/chrony/chrony_bak"
-        fi
-
         if [ ! -f /etc/chrony/chrony.conf.org ]; then
             run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
-        fi
-        
-        if [ ! -f /etc/chrony/chrony.conf.bak ]; then
-            _NUM_BAKCUPS=$(ls -l /etc/chrony/chrony_bak |grep -c chrony.conf.bak.*)
-            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.bak${_NUM_BAKCUPS}"
-            run_cmd "cp -f /etc/chrony/chrony_bak/chrony.conf.org /etc/chrony/chrony.conf"
         fi
 
         run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
@@ -65,6 +55,10 @@ server 0.kr.pool.ntp.org prefer iburst minpoll 4 maxpoll 4
 allow ${OPENSTACK_MGMT_NET}
 EOF"
         run_cmd "systemctl enable --now chrony"
+        run_cmd "systemctl restart chrony"
+        return 0
+    else
+        return 0
     fi
 }
 
@@ -76,7 +70,7 @@ function install_openstack_client() {
         ;;
         apt )
             if [[ ${OS_VERSION} =~ "22.04" ]]; then
-                log_msg "SKIP" "Already suported Ubuntu 22.04"
+                log_msg "SKIP" "Already Openstack(${_OPENSTACK_VERSION}) repo suported Ubuntu 22.04."
             else
                 run_cmd "${PKG_CMD[2]}:${_OPENSTACK_VERSION}"
             fi
@@ -88,6 +82,9 @@ function install_openstack_client() {
         if [ $? -eq 0 ]; then
             return 0
         fi
+    else
+        log_msg "ERROR" "Fail add repository."
+        exit 1
     fi
 }
 
@@ -105,18 +102,12 @@ function install_mysql() {
                     exit 1
                 elif [[ ${OS_VERSION} =~ 2[0-4].04 ]]; then
                     check_pkg "mariadb-server" "python3-pymysql"
-                    if [ $? -eq 0 ]; then
-                        _install=0
-                    else
-                        exit 1
-                    fi
                 else
                     log_msg "ERRIR" "No supported script. for upeer of Ubuntu 20.04 "
                     exit 1
                 fi
             ;;
         esac
-
     elif [ ${SVR_MODE} == "compute" ]; then
         log_msg "SKIP" "Skip install mysql."
         return 0
@@ -126,9 +117,8 @@ function install_mysql() {
         return 0 
     fi
 
-    if [ ${_install} -eq 0 ]; then
-        if [ ! -f /etc/mysql/mariadb.conf.d/99-openstack.cnf ]; then
-            run_cmd "cat <<\EOF >/etc/mysql/mariadb.conf.d/99-openstack.cnf
+    if [ $? -eq 0 ]; then
+        run_cmd "cat <<\EOF >/etc/mysql/mariadb.conf.d/99-openstack.cnf
 [mysqld]
 bind-address = ${OPENSTACK_CONTROLLER_IP}
 
@@ -138,7 +128,12 @@ max_connections = 4096
 collation-server = utf8_general_ci
 character-set-server = utf8
 EOF"
-       fi
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            log_msg "ERROR" "Faile config setup [/etc/mysql/mariadb.conf.d/99-openstack.cnf] error code \'$?\'."
+            exit 1
+        fi
     fi
 }
 
@@ -146,7 +141,6 @@ main() {
     [ $# -eq 0 ] && help_usage
     set_opts "$@"
 
-    
     if [[ -n ${CONF_PATH} ]] && [[ -n ${SVR_MODE} ]]; then
         if [ -f ${CONF_PATH} ]; then
             source ${CONF_PATH}
