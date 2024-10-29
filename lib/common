@@ -132,6 +132,7 @@ function ops_init() {
         log_msg "SKIP" "Already role add ${_COMPONENT_USER}"
     fi
 
+    sleep 1
     if ! openstack service show ${_COMPONENT_USER} -f json |jq .enabled |grep -wq 'true' >/dev/null 2>&1; then
         run_cmd "openstack service create --name ${_COMPONENT_USER} --description \"OpenStack ${_COMPONENT_TYPE}\" ${_COMPONENT_TYPE}"
         if [ $? -eq 1 ]; then

@@ -337,7 +337,7 @@ export OS_PROJECT_DOMAIN_NAME=Default
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_NAME=admin
 export OS_USERNAME=admin
-export OS_PASSWORD="${ADMIN_PASS}"
+export OS_PASSWORD=\"${ADMIN_PASS}\"
 export OS_AUTH_URL=http://controller:5000/v3
 export OS_IDENTITY_API_VERSION=3
 export OS_IMAGE_API_VERSION=2
@@ -437,7 +437,6 @@ function install_glance() {
         run_cmd "wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img -P ${SCRIPT_DIR}"
         if [ $? -eq 1 ]; then
             log_msg "WARR" "Fail image Download cirros-0.4.0-x86_64-disk.img."
-
             while true; do
                 read -p "Continue(Y|N)? " _ANSWER
                 case ${_ANSWER} in
@@ -458,7 +457,7 @@ function install_glance() {
             return 1
         fi
     else
-        exit 1
+        return 0
     fi
 }
 
@@ -482,27 +481,24 @@ function install_placement() {
 
     if [ -f ${SCRIPT_DIR}/adminrc ]; then
         run_cmd "source ${SCRIPT_DIR}/adminrc"
-        ops_init "glance" "${GLANCE_PASS}" "image" "9292"
+        ops_init "placement" "${PLACEMENT_PASS}" "placement" "8778"
     fi
 
-    check_pkg "glance"
+    check_pkg "placement-api"
     if [ $? -eq 0 ]; then
-        run_cmd "systemctl stop glance-api"
-        if [ ! -f /etc/glance/glance-api.conf.org ]; then
-            run_cmd "cp -p /etc/glance/glance-api.conf /etc/glance/glance-api.conf.org"
+        run_cmd "systemctl stop apache2"
+        if [ ! -f /etc/placement/placement.conf.org ]; then
+            run_cmd "cp -p /etc/placement/placement.conf /etc/placement/placement.conf.org"
         fi
 
         _CMD=(
             "sed -i 's/^connection = sqlite/#&/g'"
-            "sed -i'' -r -e '/^#connection = sqlit/a\connection = mysql+pymysql:\/\/glance:${GLANCE_DBPASS}@controller\/glance'"
-            "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = glance\npassword = \"${GLANCE_PASS}\"'"
-            "sed -i'' -r -e '/^\[paste_deploy\]/a\flavor = keystone'"
-            "sed -i'' -r -e '/^\[DEFAULT\]/a\enabled_backends=fs:file'"
-            "sed -i'' -r -e '/^\[glance_store\]/a\default_backend = fs'"
-            "sed -ie '\$a[fs]\nfilesystem_store_datadir = \/var\/lib\/glance\/images'"
+            "sed -i'' -r -e '/^#connection = sqlit/a\connection = mysql+pymysql:\/\/placement:${PLACEMENT_DBPASS}@controller\/placement'"
+            "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
+            "sed -i'' -r -e '/^\[keystone_authtoken\]/a\auth_url = http:\/\/controller:5000/\v3\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
         )
         for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
-            run_cmd "${_CMD[${_IDX}]} /etc/glance/glance-api.conf"
+            run_cmd "${_CMD[${_IDX}]} /etc/placement/placement.conf"
             if [ $? -eq 0 ]; then
                 continue
             else
@@ -511,54 +507,294 @@ function install_placement() {
         done
     fi
 
-    check_svc "glance-api"
+    run_cmd "systemctl start apache2"
     if [ $? -eq 0 ]; then
-        if ! mysql -uroot -p''${DB_PASS}'' glance -e "show tables;" |grep -wq 'images'; then
-            run_cmd "su -s /bin/sh -c \"glance-manage db_sync\" glance"
+        if ! mysql -uroot -p''${DB_PASS}'' placement -e "show tables;" |grep -wq 'users'; then
+            run_cmd "su -s /bin/sh -c \"placement-manage db sync\" placement"
             if [ $? -eq 0 ]; then
-                run_cmd "systemctl restart glance-api"
+                run_cmd "systemctl restart apache2"
                 if [ $? -eq 0 ]; then
                     return 0
                 else
-                    log_msg "ERROR" "Fail service start glance."
+                    log_msg "ERROR" "Fail service start placement."
                 fi
             fi
         else
-            log_msg "SKIP" "Already DB-sync glance."
-        fi
-    else
-        exit 1
-    fi
-
-    if [ ! -f ${SCRIPT_DIR}/cirros-0.4.0-x86_64-disk.img ]; then
-        run_cmd "wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img -P ${SCRIPT_DIR}"
-        if [ $? -eq 1 ]; then
-            log_msg "WARR" "Fail image Download cirros-0.4.0-x86_64-disk.img."
-
-            while true; do
-                read -p "Continue(Y|N)? " _ANSWER
-                case ${_ANSWER} in
-                    y | Y ) break  ;;
-                    n | n ) exit 0 ;;
-                    * ) continue   ;;
-                esac
-            done
-        fi
-    fi
-
-    if ! openstack image show cirros -f json |jq .status |grep -wq active; then
-        run_cmd "glance image-create --name 'cirros' --file cirros-0.4.0-x86_64-disk.img --disk-format qcow2 --container-format bare --visibility=public --hidden False"
-        if [ $? -eq 0 ]; then
-            return 0
-        else
-            log_msg "ERROR" "Fail upload image."
-            return 1
+            log_msg "SKIP" "Already DB-sync placement."
         fi
     else
         exit 1
     fi
 }
 
+function install_nova() {
+    if [ ${SVR_MODE} == "controller" ]; then
+        for _DB in nova nova_api nova_cell0; do
+            check_db "${_DB}"
+            if [ $? -eq 0 ]; then
+                _CMD=(
+                    "CREATE DATABASE ${_DB};"
+                    "GRANT ALL PRIVILEGES ON ${_DB}.* TO 'nova'@'controller' IDENTIFIED BY '${NOVA_DBPASS}';"
+                    "GRANT ALL PRIVILEGES ON ${_DB}.* TO 'nova'@'%' IDENTIFIED BY '${NOVA_DBPASS}';"
+                )
+                for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                    run_cmd "mysql -uroot -p'${DB_PASS}' mysql -e \"${_CMD[${_IDX}]}\""
+                    if [ $? -eq 0 ]; then
+                        continue
+                    else
+                        exit 1
+                    fi
+                done
+            fi
+        done
+
+        if [ -f ${SCRIPT_DIR}/adminrc ]; then
+            run_cmd "source ${SCRIPT_DIR}/adminrc"
+            ops_init "nova" "${NOVA_PASS}" "compute" "8774"
+        fi
+
+        check_pkg "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
+        if [ $? -eq 0 ]; then
+            run_cmd "systemctl stop nova-api nova-conductor nova-novncproxy nova-scheduler"
+            if [ ! -f /etc/nova/nova.conf.org ]; then
+                run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
+            fi
+            _CMD=(
+                "sed -i 's/^connection = sqlite/#&/g'"
+                "sed -i'' -r -e '/^\[api_database\]/a\connection = mysql+pymysql:\/\/nova:${NOVA_DBPASS}@controller\/nova_api'"
+                "sed -i'' -r -e '/^\[database\]/a\connection = mysql+pymysql:\/\/nova:${NOVA_DBPASS}@controller\/nova'"
+                "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_CONTROLLER_IP}'"
+                "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
+                "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
+                "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = \$my_ip\nserver_proxyclient_address = \$my_ip'"
+                "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
+                "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
+                "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
+            )
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                if [ $? -eq 0 ]; then
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        fi
+
+        check_svc "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
+        if [ $? -eq 0 ]; then
+            if ! mysql -uroot -p''${DB_PASS}'' nova_api -e "show tables;" |grep -wq 'key_pairs'; then
+                run_cmd "su -s /bin/sh -c \"nova-manage api_db sync\" nova"
+                if [ $? -eq 1 ]; then
+                    exit 1
+                fi
+            else
+                log_msg "SKIP" "Already DB-sync nova_api."
+            fi
+
+            if ! nova-manage cell_v2 list_cells |grep -wq 'cell0'; then
+                run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 map_cell0\" nova"
+                if [ $? -eq 1 ]; then
+                    exit 1
+                fi
+            else
+                log_msg "SKIP" "Already mapping cell0."
+            fi
+
+            if ! nova-manage cell_v2 list_cells |grep -wq 'cell1'; then
+                run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 create_cell --name=cell1 --verbose\" nova"
+                if [ $? -eq 1 ]; then
+                    exit 1
+                fi
+            else
+                log_msg "SKIP" "Already mapping cell1."
+            fi
+            
+            if ! mysql -uroot -p''${DB_PASS}'' nova -e "show tables;" |grep -wq 'fixed_ips'; then
+                run_cmd "su -s /bin/sh -c \"nova-manage db sync\" nova"
+                if [ $? -eq 0 ]; then
+                    run_cmd "systemctl restart nova-api nova-conductor nova-novncproxy nova-scheduler"
+                    if [ $? -eq 0 ]; then
+                        return 0
+                    else
+                        log_msg "ERROR" "Fail service start nova."
+                    fi
+                fi
+            else
+                log_msg "SKIP" "Already DB-sync nova."
+            fi
+        else
+            exit 1
+        fi
+
+    #####################################################################
+    elif [ ${SVR_MODE} == "compute" ]; then
+        check_pkg "nova-compute"
+        if [ $? -eq 0 ]; then
+            run_cmd "systemctl stop nova-compute"
+            if [ ! -f /etc/nova/nova.conf.org ]; then
+                run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
+            fi
+
+            _CMD=(
+                "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_COMPUTE_IP}'"
+                "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
+                "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
+                "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = 0.0.0.0\nserver_proxyclient_address = \$my_ip\nnovncproxy_base_url = http:\/\/controller:6080/vnc_auto.html'"
+                "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
+                "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
+                "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
+            )
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                if [ $? -eq 0 ]; then
+                    continue
+                else
+                    exit 1
+                fi
+            done
+
+            check_svc "nova-compute"
+            if [ $? -eq 0 ]; then
+                return 0
+            else
+                exit 1
+            fi
+        fi
+    fi
+}
+
+function install_neutron() {
+    if [ ${SVR_MODE} == "controller" ]; then
+        check_db "neutron"
+        if [ $? -eq 0 ]; then
+            _CMD=(
+                "CREATE DATABASE neutron;"
+                "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'controller' IDENTIFIED BY '${NEUTRON_DBPASS}';"
+                "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY '${NEUTRON_DBPASS}';"
+            )
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "mysql -uroot -p'${DB_PASS}' mysql -e \"${_CMD[${_IDX}]}\""
+                if [ $? -eq 0 ]; then
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        fi
+
+        if [ -f ${SCRIPT_DIR}/adminrc ]; then
+            run_cmd "source ${SCRIPT_DIR}/adminrc"
+            ops_init "neutron" "${NOVA_PASS}" "network" "9696"
+        fi
+
+        check_pkg "neutron-server" "neutron-plugin-ml2" "neutron-openvswitch-agent" "neutron-l3-agent" "neutron-dhcp-agent" "neutron-metadata-agent"
+        if [ $? -eq 0 ]; then
+            run_cmd "systemctl stop neutron-server neutron-openvswitch-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent"
+
+            _FILE=(
+                "/etc/neutron/neutron.conf"
+                "/etc/neutron/plugins/ml2/ml2_conf.ini"
+                "/etc/neutron/plugins/ml2/openvswitch_agent.ini"
+                "/etc/neutron/l3_agent.ini"
+                "/etc/neutron/dhcp_agent.ini"
+            )
+            for ((_IDX=0 ; _IDX < ${#_FILE[@]} ; _IDX++)); do
+                if [ ! -f ${_FILE[${_IDX}]}.org ]; then
+                    run_cmd "cp -p ${_FILE[${_IDX}]} ${_FILE[${_IDX}]}.org"
+                    if [ $? -eq 0 ]; then
+                        continue
+                    else
+                        exit 1
+                    fi
+                fi
+            done
+        fi
+
+
+
+    #     check_svc "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
+    #     if [ $? -eq 0 ]; then
+    #         if ! mysql -uroot -p''${DB_PASS}'' nova_api -e "show tables;" |grep -wq 'key_pairs'; then
+    #             run_cmd "su -s /bin/sh -c \"nova-manage api_db sync\" nova"
+    #             if [ $? -eq 1 ]; then
+    #                 exit 1
+    #             fi
+    #         else
+    #             log_msg "SKIP" "Already DB-sync nova_api."
+    #         fi
+
+    #         if ! nova-manage cell_v2 list_cells |grep -wq 'cell0'; then
+    #             run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 map_cell0\" nova"
+    #             if [ $? -eq 1 ]; then
+    #                 exit 1
+    #             fi
+    #         else
+    #             log_msg "SKIP" "Already mapping cell0."
+    #         fi
+
+    #         if ! nova-manage cell_v2 list_cells |grep -wq 'cell1'; then
+    #             run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 create_cell --name=cell1 --verbose\" nova"
+    #             if [ $? -eq 1 ]; then
+    #                 exit 1
+    #             fi
+    #         else
+    #             log_msg "SKIP" "Already mapping cell1."
+    #         fi
+            
+    #         if ! mysql -uroot -p''${DB_PASS}'' nova -e "show tables;" |grep -wq 'fixed_ips'; then
+    #             run_cmd "su -s /bin/sh -c \"nova-manage db sync\" nova"
+    #             if [ $? -eq 0 ]; then
+    #                 run_cmd "systemctl restart nova-api nova-conductor nova-novncproxy nova-scheduler"
+    #                 if [ $? -eq 0 ]; then
+    #                     return 0
+    #                 else
+    #                     log_msg "ERROR" "Fail service start nova."
+    #                 fi
+    #             fi
+    #         else
+    #             log_msg "SKIP" "Already DB-sync nova."
+    #         fi
+    #     else
+    #         exit 1
+    #     fi
+
+    # #####################################################################
+    # elif [ ${SVR_MODE} == "compute" ]; then
+    #     check_pkg "nova-compute"
+    #     if [ $? -eq 0 ]; then
+    #         run_cmd "systemctl stop nova-compute"
+    #         if [ ! -f /etc/nova/nova.conf.org ]; then
+    #             run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
+    #         fi
+
+    #         _CMD=(
+    #             "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_COMPUTE_IP}'"
+    #             "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
+    #             "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
+    #             "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = 0.0.0.0\nserver_proxyclient_address = \$my_ip\nnovncproxy_base_url = http:\/\/controller:6080/vnc_auto.html'"
+    #             "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
+    #             "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
+    #             "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
+    #         )
+    #         for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+    #             run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+    #             if [ $? -eq 0 ]; then
+    #                 continue
+    #             else
+    #                 exit 1
+    #             fi
+    #         done
+
+    #         check_svc "nova-compute"
+    #         if [ $? -eq 0 ]; then
+    #             return 0
+    #         else
+    #             exit 1
+    #         fi
+    #     fi
+    fi
+}
 
 main() {
     [ $# -eq 0 ] && help_usage
@@ -604,10 +840,12 @@ main() {
         install_keystone
         install_glance
         install_placement
+        install_nova
 
     elif [ ${SVR_MODE} == "compute" ]; then
         install_ntp
         install_openstack_client
+        install_nova
 
     else
         log_msg "FAIL" "Please check option -m [ supported 'controller' or 'compute' ]."
