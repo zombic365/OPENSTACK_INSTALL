@@ -12,22 +12,65 @@ function run_cmd() {
     fi
 }
 
+function check_db() {
+    _DB_NAME=$1
+
+    if [ -n ${DB_PASS} ]; then
+        if mysqlshow -uroot -p''${DB_PASS}'' |grep -wq ${_DB_NAME} >/dev/null 2>&1; then
+            log_msg "SKIP" "Already DB ${_DB_NAME}."
+            return 1
+        else
+            return 0
+        fi
+    else
+        log_msg "ERROR" "No value DB_PASS, check config file."
+        exit 1
+    fi
+}
+function check_svc() {
+    _SVC_NAME=($@)
+    _SVC_NAME_NUM=${#_SVC_NAME[@]}
+
+    for _SVC in ${_SVC_NAME[@]}; do
+        if [[ ${_SVC_CHECK} -eq 0 ]] && [[ ${_SVC_NAME_NUM} -eq 0 ]]; then
+            return 0
+        else
+            _SVC_NAME_NUM=$(expr ${_SVC_NAME_NUM} - 1)
+        fi
+
+        if ! systemctl list-unit-files --state enabled |grep -wq ${_SVC}; then
+            run_cmd "systemctl enable --now ${_SVC}"
+        fi
+        
+        if ! systemctl is-active ${_SVC} |grep -wq active; then
+            run_cmd "systemctl restart ${_SVC}"
+            if [ $? -eq 0 ]; then
+                _SVC_CHECK=0
+            else
+                log_msg "WARR" "Service start fail."
+                return 1
+            fi
+        else
+            _SVC_CHECK=0
+        fi
+    done
+}
 function check_pkg() {
-    _PKG_NAME=$@
+    _PKG_NAME=($@)
     _PKG_NAME_NUM=${#_PKG_NAME[@]}
 
     for _PKG in ${_PKG_NAME[@]}; do
         _PKG_NAME_NUM=$(expr ${_PKG_NAME_NUM} - 1)
         case ${PKG_CMD[1]} in
             rpm )
-                if ! ${PKG_CMD[1]} -q ${_PKG_NAME} >/dev/null 2>&1; then            
+                if ! ${PKG_CMD[1]} -q ${_PKG} >/dev/null 2>&1; then            
                     _install=0
                 else
                     _install=1
                 fi
             ;;
             dpkg )
-                if ! ${PKG_CMD[1]} -s ${_PKG_NAME} >/dev/null 2>&1; then
+                if ! ${PKG_CMD[1]} -s ${_PKG} >/dev/null 2>&1; then
                     _install=0
                 else
                     _install=1
