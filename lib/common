@@ -27,6 +27,7 @@ function check_db() {
         exit 1
     fi
 }
+
 function check_svc() {
     _SVC_NAME=($@)
     _SVC_NAME_NUM=${#_SVC_NAME[@]}
@@ -55,6 +56,7 @@ function check_svc() {
         fi
     done
 }
+
 function check_pkg() {
     _PKG_NAME=($@)
     _PKG_NAME_NUM=${#_PKG_NAME[@]}
@@ -98,4 +100,57 @@ function check_pkg() {
             exit 1
         fi
     done
+}
+
+function ops_init() {
+    _CHECK_ARGS=($@)
+    if [ ${#_CHECK_ARGS[@]} -ne 4 ]; then
+        log_msg "ERROR" "Check Commpoent args [ USER, PASS, NAME, PORT ]."
+        exit 1
+    else
+        _COMPONENT_USER=$1
+        _COMPONENT_PASS=$2
+        _COMPONENT_TYPE=$3
+        _COMPONENT_PORT=$4
+    fi
+
+    if ! openstack user show ${_COMPONENT_USER} -f json |jq .enabled |grep -wq 'true' >/dev/null 2>&1; then
+        run_cmd "openstack user create --domain default --password \"${_COMPONENT_PASS}\" ${_COMPONENT_USER}"
+        if [ $? -eq 1 ]; then
+            exit 1
+        fi
+    else
+        log_msg "SKIP" "Already user ${_COMPONENT_USER}"
+    fi
+
+    if ! openstack role assignment list --user ${_COMPONENT_USER} --role admin -f json |jq .[0].Inherited |grep -wq 'false' >/dev/null 2>&1; then
+        run_cmd "openstack role add --project service --user ${_COMPONENT_USER} admin"
+        if [ $? -eq 1 ]; then
+            exit 1
+        fi
+    else
+        log_msg "SKIP" "Already role add ${_COMPONENT_USER}"
+    fi
+
+    if ! openstack service show ${_COMPONENT_USER} -f json |jq .enabled |grep -wq 'true' >/dev/null 2>&1; then
+        run_cmd "openstack service create --name ${_COMPONENT_USER} --description \"OpenStack ${_COMPONENT_TYPE}\" ${_COMPONENT_TYPE}"
+        if [ $? -eq 1 ]; then
+            exit 1
+        fi
+    else
+        log_msg "SKIP" "Already create service ${_COMPONENT_USER}"
+    fi
+ 
+    for _INTERFACE in admin internal public; do
+        if ! openstack endpoint list --service ${_COMPONENT_TYPE} --interface ${_INTERFACE} -f json |jq  '.[0].Enabled' |grep -wq 'true' >/dev/null 2>&1; then
+            run_cmd "openstack endpoint create --region RegionOne ${_COMPONENT_TYPE} ${_INTERFACE} http://controller:${_COMPONENT_PORT}"
+            if  [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            log_msg "SKIP" "Already endpoint ${_INTERFACE} ${_COMPONENT_TYPE}"
+        fi
+    done
+
+    return 0
 }

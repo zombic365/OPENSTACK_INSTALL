@@ -352,6 +352,9 @@ EOF"
                     log_msg "ERROR" "Create faile openstack project 'service'."
                     exit 1
                 fi
+            else
+                log_msg "SKIP" "Already openstack admin setting"
+                return 0
             fi
         else
             log_msg "ERROR" "file not found source ${SCRIPT_DIR}/adminrc"
@@ -361,6 +364,201 @@ EOF"
         return 1
     fi
 }
+
+function install_glance() {
+    check_db "glance"
+    if [ $? -eq 0 ]; then
+        _CMD=(
+            "CREATE DATABASE glance;"
+            "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'controller' IDENTIFIED BY '${GLANCE_DBPASS}';"
+            "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '${GLANCE_DBPASS}';"
+        )
+        for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+            run_cmd "mysql -uroot -p'${DB_PASS}' mysql -e \"${_CMD[${_IDX}]}\""
+            if [ $? -eq 0 ]; then
+                continue
+            else
+                exit 1
+            fi
+        done
+    fi
+
+    if [ -f ${SCRIPT_DIR}/adminrc ]; then
+        run_cmd "source ${SCRIPT_DIR}/adminrc"
+        ops_init "glance" "${GLANCE_PASS}" "image" "9292"
+    fi
+
+    check_pkg "glance"
+    if [ $? -eq 0 ]; then
+        run_cmd "systemctl stop glance-api"
+        if [ ! -f /etc/glance/glance-api.conf.org ]; then
+            run_cmd "cp -p /etc/glance/glance-api.conf /etc/glance/glance-api.conf.org"
+        fi
+
+        _CMD=(
+            "sed -i 's/^connection = sqlite/#&/g'"
+            "sed -i'' -r -e '/^#connection = sqlit/a\connection = mysql+pymysql:\/\/glance:${GLANCE_DBPASS}@controller\/glance'"
+            "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = glance\npassword = \"${GLANCE_PASS}\"'"
+            "sed -i'' -r -e '/^\[paste_deploy\]/a\flavor = keystone'"
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\enabled_backends=fs:file'"
+            "sed -i'' -r -e '/^\[glance_store\]/a\default_backend = fs'"
+            "sed -ie '\$a[fs]\nfilesystem_store_datadir = \/var\/lib\/glance\/images'"
+        )
+        for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+            run_cmd "${_CMD[${_IDX}]} /etc/glance/glance-api.conf"
+            if [ $? -eq 0 ]; then
+                continue
+            else
+                exit 1
+            fi
+        done
+    fi
+
+    check_svc "glance-api"
+    if [ $? -eq 0 ]; then
+        if ! mysql -uroot -p''${DB_PASS}'' glance -e "show tables;" |grep -wq 'images'; then
+            run_cmd "su -s /bin/sh -c \"glance-manage db_sync\" glance"
+            if [ $? -eq 0 ]; then
+                run_cmd "systemctl restart glance-api"
+                if [ $? -eq 0 ]; then
+                    return 0
+                else
+                    log_msg "ERROR" "Fail service start glance."
+                fi
+            fi
+        else
+            log_msg "SKIP" "Already DB-sync glance."
+        fi
+    else
+        exit 1
+    fi
+
+    if [ ! -f ${SCRIPT_DIR}/cirros-0.4.0-x86_64-disk.img ]; then
+        run_cmd "wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img -P ${SCRIPT_DIR}"
+        if [ $? -eq 1 ]; then
+            log_msg "WARR" "Fail image Download cirros-0.4.0-x86_64-disk.img."
+
+            while true; do
+                read -p "Continue(Y|N)? " _ANSWER
+                case ${_ANSWER} in
+                    y | Y ) break  ;;
+                    n | n ) exit 0 ;;
+                    * ) continue   ;;
+                esac
+            done
+        fi
+    fi
+
+    if ! openstack image show cirros -f json |jq .status |grep -wq active; then
+        run_cmd "glance image-create --name 'cirros' --file cirros-0.4.0-x86_64-disk.img --disk-format qcow2 --container-format bare --visibility=public --hidden False"
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            log_msg "ERROR" "Fail upload image."
+            return 1
+        fi
+    else
+        exit 1
+    fi
+}
+
+function install_placement() {
+    check_db "placement"
+    if [ $? -eq 0 ]; then
+        _CMD=(
+            "CREATE DATABASE placement;"
+            "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'controller' IDENTIFIED BY '${PLACEMENT_DBPASS}';"
+            "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY '${PLACEMENT_DBPASS}';"
+        )
+        for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+            run_cmd "mysql -uroot -p'${DB_PASS}' mysql -e \"${_CMD[${_IDX}]}\""
+            if [ $? -eq 0 ]; then
+                continue
+            else
+                exit 1
+            fi
+        done
+    fi
+
+    if [ -f ${SCRIPT_DIR}/adminrc ]; then
+        run_cmd "source ${SCRIPT_DIR}/adminrc"
+        ops_init "glance" "${GLANCE_PASS}" "image" "9292"
+    fi
+
+    check_pkg "glance"
+    if [ $? -eq 0 ]; then
+        run_cmd "systemctl stop glance-api"
+        if [ ! -f /etc/glance/glance-api.conf.org ]; then
+            run_cmd "cp -p /etc/glance/glance-api.conf /etc/glance/glance-api.conf.org"
+        fi
+
+        _CMD=(
+            "sed -i 's/^connection = sqlite/#&/g'"
+            "sed -i'' -r -e '/^#connection = sqlit/a\connection = mysql+pymysql:\/\/glance:${GLANCE_DBPASS}@controller\/glance'"
+            "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = glance\npassword = \"${GLANCE_PASS}\"'"
+            "sed -i'' -r -e '/^\[paste_deploy\]/a\flavor = keystone'"
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\enabled_backends=fs:file'"
+            "sed -i'' -r -e '/^\[glance_store\]/a\default_backend = fs'"
+            "sed -ie '\$a[fs]\nfilesystem_store_datadir = \/var\/lib\/glance\/images'"
+        )
+        for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+            run_cmd "${_CMD[${_IDX}]} /etc/glance/glance-api.conf"
+            if [ $? -eq 0 ]; then
+                continue
+            else
+                exit 1
+            fi
+        done
+    fi
+
+    check_svc "glance-api"
+    if [ $? -eq 0 ]; then
+        if ! mysql -uroot -p''${DB_PASS}'' glance -e "show tables;" |grep -wq 'images'; then
+            run_cmd "su -s /bin/sh -c \"glance-manage db_sync\" glance"
+            if [ $? -eq 0 ]; then
+                run_cmd "systemctl restart glance-api"
+                if [ $? -eq 0 ]; then
+                    return 0
+                else
+                    log_msg "ERROR" "Fail service start glance."
+                fi
+            fi
+        else
+            log_msg "SKIP" "Already DB-sync glance."
+        fi
+    else
+        exit 1
+    fi
+
+    if [ ! -f ${SCRIPT_DIR}/cirros-0.4.0-x86_64-disk.img ]; then
+        run_cmd "wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img -P ${SCRIPT_DIR}"
+        if [ $? -eq 1 ]; then
+            log_msg "WARR" "Fail image Download cirros-0.4.0-x86_64-disk.img."
+
+            while true; do
+                read -p "Continue(Y|N)? " _ANSWER
+                case ${_ANSWER} in
+                    y | Y ) break  ;;
+                    n | n ) exit 0 ;;
+                    * ) continue   ;;
+                esac
+            done
+        fi
+    fi
+
+    if ! openstack image show cirros -f json |jq .status |grep -wq active; then
+        run_cmd "glance image-create --name 'cirros' --file cirros-0.4.0-x86_64-disk.img --disk-format qcow2 --container-format bare --visibility=public --hidden False"
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            log_msg "ERROR" "Fail upload image."
+            return 1
+        fi
+    else
+        exit 1
+    fi
+}
+
 
 main() {
     [ $# -eq 0 ] && help_usage
@@ -404,6 +602,8 @@ main() {
         install_memcached
         install_etcd
         install_keystone
+        install_glance
+        install_placement
 
     elif [ ${SVR_MODE} == "compute" ]; then
         install_ntp
