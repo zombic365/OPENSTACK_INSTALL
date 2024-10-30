@@ -685,21 +685,22 @@ function install_neutron() {
 
         if [ -f ${SCRIPT_DIR}/adminrc ]; then
             run_cmd "source ${SCRIPT_DIR}/adminrc"
-            ops_init "neutron" "${NOVA_PASS}" "network" "9696"
+            # ops_init "neutron" "${NEUTRON_PASS}" "network" "9696"
         fi
 
         check_pkg "neutron-server" "neutron-plugin-ml2" "neutron-openvswitch-agent" "neutron-l3-agent" "neutron-dhcp-agent" "neutron-metadata-agent"
         if [ $? -eq 0 ]; then
-            run_cmd "systemctl stop neutron-server neutron-openvswitch-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent"
-
+            # run_cmd "systemctl stop neutron-server neutron-openvswitch-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent"
             _FILE=(
                 "/etc/neutron/neutron.conf"
                 "/etc/neutron/plugins/ml2/ml2_conf.ini"
                 "/etc/neutron/plugins/ml2/openvswitch_agent.ini"
                 "/etc/neutron/l3_agent.ini"
                 "/etc/neutron/dhcp_agent.ini"
+                "/etc/neutron/metadata_agent.ini"
             )
             for ((_IDX=0 ; _IDX < ${#_FILE[@]} ; _IDX++)); do
+                # run_cmd "cp -p ${_FILE[${_IDX}]}.org ${_FILE[${_IDX}]}"
                 if [ ! -f ${_FILE[${_IDX}]}.org ]; then
                     run_cmd "cp -p ${_FILE[${_IDX}]} ${_FILE[${_IDX}]}.org"
                     if [ $? -eq 0 ]; then
@@ -711,88 +712,217 @@ function install_neutron() {
             done
         fi
 
+        if ! ovs-vsctl list-br |grep -wq ${PROVIDER_BRIDGE_NAME} >/dev/null 2>&1; then
+            run_cmd "ovs-vsctl add-br ${PROVIDER_BRIDGE_NAME}"
+            if [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            log_msg "SKIP" "Already ovs bridge ${PROVIDER_BRIDGE_NAME}."
+        fi
 
+        if ! ovs-vsctl list-ports ${PROVIDER_BRIDGE_NAME} |grep -wq ${PROVIDER_INTERFACE} >/dev/null 2>&1; then 
+            ovs-vsctl add-port ${PROVIDER_BRIDGE_NAME} ${PROVIDER_INTERFACE}
+            echo "$?" ; exit 0
+            if [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            log_msg "SKIP" "Already ovs bridge to add ${PROVIDER_INTERFACE}."
+        fi
 
-    #     check_svc "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
-    #     if [ $? -eq 0 ]; then
-    #         if ! mysql -uroot -p''${DB_PASS}'' nova_api -e "show tables;" |grep -wq 'key_pairs'; then
-    #             run_cmd "su -s /bin/sh -c \"nova-manage api_db sync\" nova"
-    #             if [ $? -eq 1 ]; then
-    #                 exit 1
-    #             fi
-    #         else
-    #             log_msg "SKIP" "Already DB-sync nova_api."
-    #         fi
+        _SETUP_NEUTRON_CNT=0
+        #### Neutron config
+        _CMD=(
+            "sed -i 's/^connection = sqlite/#&/g'"
+            "sed -i'' -r -e '/^\[database\]/a\connection = mysql+pymysql:\/\/neutron:${NEUTRON_DBPASS}@controller\/neutron'"
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\core_plugin = ml2\nservice_plugins = router\ntransport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller\nauth_strategy = keystone\nnotify_nova_on_port_status_changes = true\nnotify_nova_on_port_data_changes = true'"
+            "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = neutron\npassword = \"${NEUTRON_PASS}\"'"
+            "sed -i'' -r -e '/^\[nova\]/a\auth_url = http:\/\/controller:5000\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nregion_name = RegionOne\nproject_name = service\nusername = nova\npassword = \"${NEUTRON_PASS}\"'"
+            "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/neutron\/tmp'"
+        )
+        if ! grep -Fq "password = \"${NEUTRON_PASS}\"" /etc/neutron/neutron.conf; then
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/neutron.conf"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/neutron.conf"
+        fi
 
-    #         if ! nova-manage cell_v2 list_cells |grep -wq 'cell0'; then
-    #             run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 map_cell0\" nova"
-    #             if [ $? -eq 1 ]; then
-    #                 exit 1
-    #             fi
-    #         else
-    #             log_msg "SKIP" "Already mapping cell0."
-    #         fi
+        #### Neutron ml2 config
+        _CMD=(
+            "sed -i'' -r -e '/^\[ml2\]/a\type_drivers = flat,vlan,vxlan\ntenant_network_types = vxlan\nmechanism_drivers = openvswitch,l2population\nextension_drivers = port_security'"
+            "sed -i'' -r -e '/^\[ml2_type_flat\]/a\flat_networks = provider'"
+            "sed -i'' -r -e '/^\[ml2_type_vxlan\]/a\vni_ranges = 1:100'"
+        )
+        if ! grep -q "flat_networks = provider" /etc/neutron/plugins/ml2/ml2_conf.ini; then 
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/plugins/ml2/ml2_conf.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/plugins/ml2/ml2_conf.ini"
+        fi
 
-    #         if ! nova-manage cell_v2 list_cells |grep -wq 'cell1'; then
-    #             run_cmd "su -s /bin/sh -c \"nova-manage cell_v2 create_cell --name=cell1 --verbose\" nova"
-    #             if [ $? -eq 1 ]; then
-    #                 exit 1
-    #             fi
-    #         else
-    #             log_msg "SKIP" "Already mapping cell1."
-    #         fi
-            
-    #         if ! mysql -uroot -p''${DB_PASS}'' nova -e "show tables;" |grep -wq 'fixed_ips'; then
-    #             run_cmd "su -s /bin/sh -c \"nova-manage db sync\" nova"
-    #             if [ $? -eq 0 ]; then
-    #                 run_cmd "systemctl restart nova-api nova-conductor nova-novncproxy nova-scheduler"
-    #                 if [ $? -eq 0 ]; then
-    #                     return 0
-    #                 else
-    #                     log_msg "ERROR" "Fail service start nova."
-    #                 fi
-    #             fi
-    #         else
-    #             log_msg "SKIP" "Already DB-sync nova."
-    #         fi
-    #     else
-    #         exit 1
-    #     fi
+        #### Neutron openvswitch config
+        _CMD=(
+            "sed -i'' -r -e '/^\[ovs\]/a\bridge_mappings = provider:${PROVIDER_BRIDGE_NAME}\nlocal_ip = ${OVERLAY_INTERFACE_IP_ADDRESS}'"
+            "sed -i'' -r -e '/^\[agent\]/a\tunnel_types = vxlan\nl2_population = true'"
+            "sed -i'' -r -e '/^\[securitygroup\]/a\enable_security_group = true\nfirewall_driver = openvswitch'"
+        )
+        if ! grep -q "local_ip = ${OVERLAY_INTERFACE_IP_ADDRESS}" /etc/neutron/plugins/ml2/openvswitch_agent.ini; then 
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/plugins/ml2/openvswitch_agent.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi        
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/plugins/ml2/openvswitch_agent.ini"
+        fi
+        
+        #### Neutron l3 config
+        _CMD=(
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\interface_driver = openvswitch'"
+        )
+        if ! grep -q "interface_driver = openvswitch" /etc/neutron/l3_agent.ini; then 
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/l3_agent.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/l3_agent.ini"
+        fi
 
-    # #####################################################################
-    # elif [ ${SVR_MODE} == "compute" ]; then
-    #     check_pkg "nova-compute"
-    #     if [ $? -eq 0 ]; then
-    #         run_cmd "systemctl stop nova-compute"
-    #         if [ ! -f /etc/nova/nova.conf.org ]; then
-    #             run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
-    #         fi
+        #### Neutron dhcp config
+        _CMD=(
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\interface_driver = openvswitch\ndhcp_driver = neutron.agent.linux.dhcp.Dnsmasq\nenable_isolated_metadata = true'"
+        )
+        if ! grep -q "interface_driver = openvswitch" /etc/neutron/dhcp_agent.ini; then
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/dhcp_agent.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
 
-    #         _CMD=(
-    #             "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_COMPUTE_IP}'"
-    #             "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
-    #             "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
-    #             "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = 0.0.0.0\nserver_proxyclient_address = \$my_ip\nnovncproxy_base_url = http:\/\/controller:6080/vnc_auto.html'"
-    #             "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
-    #             "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
-    #             "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
-    #         )
-    #         for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
-    #             run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
-    #             if [ $? -eq 0 ]; then
-    #                 continue
-    #             else
-    #                 exit 1
-    #             fi
-    #         done
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/dhcp_agent.ini"
+        fi
 
-    #         check_svc "nova-compute"
-    #         if [ $? -eq 0 ]; then
-    #             return 0
-    #         else
-    #             exit 1
-    #         fi
-    #     fi
+        #### Neutron metadata config
+        _CMD=(
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\nova_metadata_host = controller\nmetadata_proxy_shared_secret = \"${METADATA_SECRET}\"'"
+        )
+        if ! grep -Fq "metadata_proxy_shared_secret = \"${METADATA_SECRET}\"" /etc/neutron/metadata_agent.ini; then
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/metadata_agent.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/metadata_agent.ini"
+        fi
+
+        #### Neutron nova config
+        _CMD=(
+            "sed -i'' -r -e '/^\[neutron\]/a\auth_url = http:\/\/controller:5000\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nregion_name = RegionOne\nproject_name = service\nusername = neutron\npassword = \"${NEUTRON_PASS}\"\nservice_metadata_proxy = true\nmetadata_proxy_shared_secret = \"${METADATA_SECRET}\"'"
+        )
+        if ! grep -Fq "password = \"${NEUTRON_PASS}\"" /etc/nova/nova.conf; then
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/nova/nova.conf"
+        fi
+
+        run_cmd "systemctl restart nova-api"
+        if [ $? -eq 0 ]; then
+            if ! mysql -uroot -p''${DB_PASS}'' neutron -e "show tables;" |grep -wq 'vips'; then
+                run_cmd "su -s /bin/sh -c \"neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head\" neutron"
+                if [ $? -eq 0 ]; then
+                    check_svc "neutron-server" "neutron-openvswitch-agent" "neutron-dhcp-agent" "neutron-metadata-agent"
+                    if [ $? -eq 0 ]; then
+                        return 0
+                    else
+                        exit 1
+                    fi
+                else
+                    exit 1
+                fi
+            else
+                log_msg "SKIP" "Already DB-sync neutron."
+            fi
+        else
+            exit 1
+        fi
+
+    #####################################################################
+    elif [ ${SVR_MODE} == "compute" ]; then
+        check_pkg "neutron-openvswitch-agent"
+        if [ $? -eq 0 ]; then
+            run_cmd "systemctl stop nova-compute"
+            if [ ! -f /etc/nova/nova.conf.org ]; then
+                run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
+            fi
+
+            _CMD=(
+                "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_COMPUTE_IP}'"
+                "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
+                "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
+                "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = 0.0.0.0\nserver_proxyclient_address = \$my_ip\nnovncproxy_base_url = http:\/\/controller:6080/vnc_auto.html'"
+                "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
+                "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
+                "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
+            )
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                if [ $? -eq 0 ]; then
+                    continue
+                else
+                    exit 1
+                fi
+            done
+
+            check_svc "nova-compute"
+            if [ $? -eq 0 ]; then
+                return 0
+            else
+                exit 1
+            fi
+        fi
     fi
 }
 
@@ -830,22 +960,24 @@ main() {
 
 
     if [ ${SVR_MODE} == "controller" ]; then
-        install_ntp
-        install_openstack_client
-        install_mysql
-        install_mysql_python
-        install_rabbitmq
-        install_memcached
-        install_etcd
-        install_keystone
-        install_glance
-        install_placement
-        install_nova
+        # install_ntp
+        # install_openstack_client
+        # install_mysql
+        # install_mysql_python
+        # install_rabbitmq
+        # install_memcached
+        # install_etcd
+        # install_keystone
+        # install_glance
+        # install_placement
+        # install_nova
+        install_neutron
 
     elif [ ${SVR_MODE} == "compute" ]; then
         install_ntp
         install_openstack_client
         install_nova
+        install_neutron
 
     else
         log_msg "FAIL" "Please check option -m [ supported 'controller' or 'compute' ]."

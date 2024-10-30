@@ -94,7 +94,11 @@ function check_pkg() {
             fi
         elif [ ${_install} -eq 1 ]; then
             log_msg "SKIP" "Already install ${_PKG}."
-            return 1
+            if [ ${_PKG_NAME_NUM} -eq 0 ]; then 
+                return 0
+            else
+                continue
+            fi
         else
             log_msg "ERROR" "Aboart bug"
             exit 1
@@ -118,11 +122,14 @@ function ops_init() {
         run_cmd "openstack user create --domain default --password \"${_COMPONENT_PASS}\" ${_COMPONENT_USER}"
         if [ $? -eq 1 ]; then
             exit 1
+        else
+            sleep 1
         fi
     else
         log_msg "SKIP" "Already user ${_COMPONENT_USER}"
     fi
 
+    
     if ! openstack role assignment list --user ${_COMPONENT_USER} --role admin -f json |jq .[0].Inherited |grep -wq 'false' >/dev/null 2>&1; then
         run_cmd "openstack role add --project service --user ${_COMPONENT_USER} admin"
         if [ $? -eq 1 ]; then
@@ -132,7 +139,6 @@ function ops_init() {
         log_msg "SKIP" "Already role add ${_COMPONENT_USER}"
     fi
 
-    sleep 1
     if ! openstack service show ${_COMPONENT_USER} -f json |jq .enabled |grep -wq 'true' >/dev/null 2>&1; then
         run_cmd "openstack service create --name ${_COMPONENT_USER} --description \"OpenStack ${_COMPONENT_TYPE}\" ${_COMPONENT_TYPE}"
         if [ $? -eq 1 ]; then
