@@ -42,27 +42,6 @@ function set_opts() {
     shift $((OPTIND-1))
 }
 
-function install_ntp() {
-    check_pkg "chrony"
-    if [ $? -eq 0 ]; then
-        if [ ! -f /etc/chrony/chrony.conf.org ]; then
-            run_cmd "cp -p /etc/chrony/chrony.conf /etc/chrony/chrony_bak/chrony.conf.org"
-        fi
-
-        run_cmd "sed -i 's/^pool/#&/g' /etc/chrony/chrony.conf"
-        run_cmd "cat <<EOF >>/etc/chrony/chrony.conf
-
-server 0.kr.pool.ntp.org prefer iburst minpoll 4 maxpoll 4
-allow ${OPENSTACK_MGMT_NET}
-EOF"
-        run_cmd "systemctl enable --now chrony"
-        run_cmd "systemctl restart chrony"
-        return 0
-    else
-        return 0
-    fi
-}
-
 function install_openstack_client() {
     _OPENSTACK_VERSION=$(echo "${OPENSTACK_VERSION}" |tr '[A-Z]' '[a-z]')
     case ${PKG_CMD[0]} in
@@ -104,7 +83,7 @@ function install_mysql() {
                 check_pkg "mariadb-server"
                 # remove "mariadb-common"
                 if [ $? -eq 0 ]; then
-                run_cmd "cat <<\EOF >/etc/mysql/mariadb.conf.d/99-openstack.cnf
+                    run_cmd "cat <<\EOF >/etc/mysql/mariadb.conf.d/99-openstack.cnf
 [mysqld]
 bind-address = ${OPENSTACK_CONTROLLER_IP}
 
@@ -217,11 +196,21 @@ function install_memcached() {
     if [ $? -eq 0 ]; then
         check_pkg "python3-memcache"
         if [ $? -eq 0 ]; then
-            run_cmd "systemctl enable --now memcached"
-            if [ $? -eq 0 ]; then
-                run_cmd "systemctl start memcached"
+            if [ ! -f /etc/memcached.conf.org ]; then
+                run_cmd "cp -p /etc/memcached.conf /etc/memcached.conf.org"
+            fi
+
+            if ! grep -q '-l controller' /etc/memcached.conf; then
+                run_cmd "sed -i 's/-l 127.0.0.1/#&\n-l controller/g' /etc/memcached.conf"
                 if [ $? -eq 0 ]; then
-                    return 0
+                    enable_svc "memcached"
+                    if [ $? -eq 0 ]; then
+                        return 0
+                    else
+                        exit 1
+                    fi
+                else
+                    exit 1
                 fi
             else
                 exit 1
@@ -330,20 +319,10 @@ function install_keystone() {
         run_cmd "echo 'ServerName controller' >>/etc/apache2/apache2.conf"
     fi
 
-    check_svc "apache2"
+    enable_svc "apache2"
     if [ $? -eq 0 ]; then
-        run_cmd "cat <<EOF >${SCRIPT_DIR}/adminrc
-export OS_PROJECT_DOMAIN_NAME=Default
-export OS_USER_DOMAIN_NAME=Default
-export OS_PROJECT_NAME=admin
-export OS_USERNAME=admin
-export OS_PASSWORD=\"${ADMIN_PASS}\"
-export OS_AUTH_URL=http://controller:5000/v3
-export OS_IDENTITY_API_VERSION=3
-export OS_IMAGE_API_VERSION=2
-EOF"
         if [ -f ${SCRIPT_DIR}/adminrc ]; then
-            run_cmd "source ${SCRIPT_DIR}/adminrc"
+            # run_cmd "source ${SCRIPT_DIR}/adminrc"
             if ! openstack project list -f json |jq '.[0].Name' |grep -wq 'service'; then
                 run_cmd "openstack project create --domain default --description \"Service Project\" service"
                 if [ $? -eq 0 ]; then
@@ -384,7 +363,7 @@ function install_glance() {
     fi
 
     if [ -f ${SCRIPT_DIR}/adminrc ]; then
-        run_cmd "source ${SCRIPT_DIR}/adminrc"
+        # run_cmd "source ${SCRIPT_DIR}/adminrc"
         ops_init "glance" "${GLANCE_PASS}" "image" "9292"
     fi
 
@@ -414,7 +393,7 @@ function install_glance() {
         done
     fi
 
-    check_svc "glance-api"
+    enable_svc "glance-api"
     if [ $? -eq 0 ]; then
         if ! mysql -uroot -p''${DB_PASS}'' glance -e "show tables;" |grep -wq 'images'; then
             run_cmd "su -s /bin/sh -c \"glance-manage db_sync\" glance"
@@ -480,7 +459,7 @@ function install_placement() {
     fi
 
     if [ -f ${SCRIPT_DIR}/adminrc ]; then
-        run_cmd "source ${SCRIPT_DIR}/adminrc"
+        # run_cmd "source ${SCRIPT_DIR}/adminrc"
         ops_init "placement" "${PLACEMENT_PASS}" "placement" "8778"
     fi
 
@@ -549,7 +528,7 @@ function install_nova() {
         done
 
         if [ -f ${SCRIPT_DIR}/adminrc ]; then
-            run_cmd "source ${SCRIPT_DIR}/adminrc"
+            # run_cmd "source ${SCRIPT_DIR}/adminrc"
             ops_init "nova" "${NOVA_PASS}" "compute" "8774"
         fi
 
@@ -581,7 +560,7 @@ function install_nova() {
             done
         fi
 
-        check_svc "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
+        enable_svc "nova-api" "nova-conductor" "nova-novncproxy" "nova-scheduler"
         if [ $? -eq 0 ]; then
             if ! mysql -uroot -p''${DB_PASS}'' nova_api -e "show tables;" |grep -wq 'key_pairs'; then
                 run_cmd "su -s /bin/sh -c \"nova-manage api_db sync\" nova"
@@ -630,6 +609,7 @@ function install_nova() {
     #####################################################################
     elif [ ${SVR_MODE} == "compute" ]; then
         check_pkg "nova-compute"
+    
         if [ $? -eq 0 ]; then
             run_cmd "systemctl stop nova-compute"
             if [ ! -f /etc/nova/nova.conf.org ]; then
@@ -654,7 +634,7 @@ function install_nova() {
                 fi
             done
 
-            check_svc "nova-compute"
+            enable_svc "nova-compute"
             if [ $? -eq 0 ]; then
                 return 0
             else
@@ -664,6 +644,8 @@ function install_nova() {
     fi
 }
 
+
+# 동백수목원, 동박낭
 function install_neutron() {
     if [ ${SVR_MODE} == "controller" ]; then
         check_db "neutron"
@@ -684,8 +666,8 @@ function install_neutron() {
         fi
 
         if [ -f ${SCRIPT_DIR}/adminrc ]; then
-            run_cmd "source ${SCRIPT_DIR}/adminrc"
-            # ops_init "neutron" "${NEUTRON_PASS}" "network" "9696"
+            # run_cmd "source ${SCRIPT_DIR}/adminrc"
+            ops_init "neutron" "${NEUTRON_PASS}" "network" "9696"
         fi
 
         check_pkg "neutron-server" "neutron-plugin-ml2" "neutron-openvswitch-agent" "neutron-l3-agent" "neutron-dhcp-agent" "neutron-metadata-agent"
@@ -759,7 +741,7 @@ function install_neutron() {
         _CMD=(
             "sed -i'' -r -e '/^\[ml2\]/a\type_drivers = flat,vlan,vxlan\ntenant_network_types = vxlan\nmechanism_drivers = openvswitch,l2population\nextension_drivers = port_security'"
             "sed -i'' -r -e '/^\[ml2_type_flat\]/a\flat_networks = provider'"
-            "sed -i'' -r -e '/^\[ml2_type_vxlan\]/a\vni_ranges = 1:100'"
+            "sed -i'' -r -e '/^\[ml2_type_vxlan\]/a\vni_ranges = ${VNI_START}:${VNI_END}'"
         )
         if ! grep -q "flat_networks = provider" /etc/neutron/plugins/ml2/ml2_conf.ini; then 
             for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
@@ -777,11 +759,11 @@ function install_neutron() {
 
         #### Neutron openvswitch config
         _CMD=(
-            "sed -i'' -r -e '/^\[ovs\]/a\bridge_mappings = provider:${PROVIDER_BRIDGE_NAME}\nlocal_ip = ${OVERLAY_INTERFACE_IP_ADDRESS}'"
+            "sed -i'' -r -e '/^\[ovs\]/a\bridge_mappings = provider:${PROVIDER_BRIDGE_NAME}\nlocal_ip = ${OVERLAY_INTERFACE_CONTROLLER_IP_ADDRESS}'"
             "sed -i'' -r -e '/^\[agent\]/a\tunnel_types = vxlan\nl2_population = true'"
             "sed -i'' -r -e '/^\[securitygroup\]/a\enable_security_group = true\nfirewall_driver = openvswitch'"
         )
-        if ! grep -q "local_ip = ${OVERLAY_INTERFACE_IP_ADDRESS}" /etc/neutron/plugins/ml2/openvswitch_agent.ini; then 
+        if ! grep -q "local_ip = ${OVERLAY_INTERFACE_CONTROLLER_IP_ADDRESS}" /etc/neutron/plugins/ml2/openvswitch_agent.ini; then 
             for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
                 run_cmd "${_CMD[${_IDX}]} /etc/neutron/plugins/ml2/openvswitch_agent.ini"
                 if [ $? -eq 0 ]; then
@@ -873,7 +855,7 @@ function install_neutron() {
             if ! mysql -uroot -p''${DB_PASS}'' neutron -e "show tables;" |grep -wq 'vips'; then
                 run_cmd "su -s /bin/sh -c \"neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head\" neutron"
                 if [ $? -eq 0 ]; then
-                    check_svc "neutron-server" "neutron-openvswitch-agent" "neutron-dhcp-agent" "neutron-metadata-agent"
+                    enable_svc "neutron-server" "neutron-openvswitch-agent" "neutron-dhcp-agent" "neutron-metadata-agent" "neutron-l3-agent"
                     if [ $? -eq 0 ]; then
                         return 0
                     else
@@ -893,35 +875,674 @@ function install_neutron() {
     elif [ ${SVR_MODE} == "compute" ]; then
         check_pkg "neutron-openvswitch-agent"
         if [ $? -eq 0 ]; then
-            run_cmd "systemctl stop nova-compute"
-            if [ ! -f /etc/nova/nova.conf.org ]; then
-                run_cmd "cp -p /etc/nova/nova.conf /etc/nova/nova.conf.org"
-            fi
-
-            _CMD=(
-                "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller:5672\nmy_ip = ${OPENSTACK_COMPUTE_IP}'"
-                "sed -i'' -r -e '/^\[api\]/a\auth_strategy = keystone'"
-                "sed -i'' -r -e '/^\[keystone_authtoken\]/a\www_authenticate_uri = http:\/\/controller:5000\nauth_url = http:\/\/controller:5000\nmemcached_servers = controller:11211\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nproject_name = service\nusername = nova\npassword = \"${NOVA_PASS}\"'"
-                "sed -i'' -r -e '/^\[vnc\]/a\enabled = true\nserver_listen = 0.0.0.0\nserver_proxyclient_address = \$my_ip\nnovncproxy_base_url = http:\/\/controller:6080/vnc_auto.html'"
-                "sed -i'' -r -e '/^\[glance\]/a\api_servers = http:\/\/controller:9292'"
-                "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/nova\/tmp'"
-                "sed -i'' -r -e '/^\[placement\]/a\region_name = RegionOne\nproject_domain_name = Default\nproject_name = service\nauth_type = password\nuser_domain_name = Default\nauth_url = http:\/\/controller:5000\/v3\nusername = placement\npassword = \"${PLACEMENT_PASS}\"'"
+            # run_cmd "systemctl stop neutron-server neutron-openvswitch-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent"
+            _FILE=(
+                "/etc/neutron/neutron.conf"
+                "/etc/neutron/plugins/ml2/openvswitch_agent.ini"
             )
+            for ((_IDX=0 ; _IDX < ${#_FILE[@]} ; _IDX++)); do
+                if [ ! -f ${_FILE[${_IDX}]}.org ]; then
+                    run_cmd "cp -p ${_FILE[${_IDX}]} ${_FILE[${_IDX}]}.org"
+                    if [ $? -eq 0 ]; then
+                        continue
+                    else
+                        exit 1
+                    fi
+                fi
+            done
+        fi
+
+        if ! ovs-vsctl list-br |grep -wq ${PROVIDER_BRIDGE_NAME} >/dev/null 2>&1; then
+            run_cmd "ovs-vsctl add-br ${PROVIDER_BRIDGE_NAME}"
+            if [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            log_msg "SKIP" "Already ovs bridge ${PROVIDER_BRIDGE_NAME}."
+        fi
+
+        if ! ovs-vsctl list-ports ${PROVIDER_BRIDGE_NAME} |grep -wq ${PROVIDER_INTERFACE} >/dev/null 2>&1; then 
+            ovs-vsctl add-port ${PROVIDER_BRIDGE_NAME} ${PROVIDER_INTERFACE}
+            echo "$?" ; exit 0
+            if [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            log_msg "SKIP" "Already ovs bridge to add ${PROVIDER_INTERFACE}."
+        fi
+
+        _SETUP_NEUTRON_CNT=0
+        #### Neutron config
+        _CMD=(
+            "sed -i'' -r -e '/^\[DEFAULT\]/a\transport_url = rabbit:\/\/openstack:${RABBIT_PASS}@controller'"
+            "sed -i'' -r -e '/^\[oslo_concurrency\]/a\lock_path = \/var\/lib\/neutron\/tmp'"
+        )
+        if ! grep -Fq "openstack:${RABBIT_PASS}" /etc/neutron/neutron.conf; then
             for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
-                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/neutron.conf"
                 if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
                     continue
                 else
                     exit 1
                 fi
             done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/neutron.conf"
+        fi
 
-            check_svc "nova-compute"
+        #### Neutron openvswitch config
+        _CMD=(
+            "sed -i'' -r -e '/^\[ovs\]/a\bridge_mappings = provider:${PROVIDER_BRIDGE_NAME}\nlocal_ip = ${OVERLAY_INTERFACE_COMPUTE_IP_ADDRESS}'"
+            "sed -i'' -r -e '/^\[agent\]/a\tunnel_types = vxlan\nl2_population = true'"
+            # "sed -i'' -r -e '/^\[securitygroup\]/a\enable_security_group = true\nfirewall_driver = openvswitch'"
+            "sed -i'' -r -e '/^\[securitygroup\]/a\enable_security_group = true\nfirewall_driver = iptables_hybrid'"
+        )
+        if ! grep -q "local_ip = ${OVERLAY_INTERFACE_COMPUTE_IP_ADDRESS}" /etc/neutron/plugins/ml2/openvswitch_agent.ini; then 
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/neutron/plugins/ml2/openvswitch_agent.ini"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi        
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/neutron/plugins/ml2/openvswitch_agent.ini"
+        fi
+
+        #### Neutron nova config
+        _CMD=(
+            "sed -i'' -r -e '/^\[neutron\]/a\auth_url = http:\/\/controller:5000\nauth_type = password\nproject_domain_name = Default\nuser_domain_name = Default\nregion_name = RegionOne\nproject_name = service\nusername = neutron\npassword = \"${NEUTRON_PASS}\"\nservice_metadata_proxy = true\nmetadata_proxy_shared_secret = \"${METADATA_SECRET}\"'"
+        )
+        if ! grep -Fq "password = \"${NEUTRON_PASS}\"" /etc/nova/nova.conf; then
+            for ((_IDX=0 ; _IDX < ${#_CMD[@]} ; _IDX++)); do
+                run_cmd "${_CMD[${_IDX}]} /etc/nova/nova.conf"
+                if [ $? -eq 0 ]; then
+                    _SETUP_NEUTRON_CNT=$(expr ${_SETUP_NEUTRON_CNT} + 1)
+                    continue
+                else
+                    exit 1
+                fi
+            done
+        else
+            log_msg "SKIP" "Already setting /etc/nova/nova.conf"
+        fi
+
+        run_cmd "systemctl restart nova-compute"
+        if [ $? -eq 0 ]; then
+            enable_svc "neutron-openvswitch-agent"
             if [ $? -eq 0 ]; then
                 return 0
             else
                 exit 1
             fi
+        else
+            exit 1
+        fi
+    fi
+}
+
+function install_horizon() {
+    check_pkg "openstack-dashboard"
+    if [ $? -eq 0 ]; then
+        if [ ! -f /etc/openstack-dashboard/local_settings.py.org ]; then
+            run_cmd "cp -p /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py.org"
+        fi
+
+        if ! grep -q 'OPENSTACK_HOST = "controller"' /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "sed -i 's/^OPENSTACK_HOST = /#&/g' /etc/openstack-dashboard/local_settings.py"
+            run_cmd "sed -i'' -r -e '/^#OPENSTACK_HOST = /a\OPENSTACK_HOST = \"controller\"' /etc/openstack-dashboard/local_settings.py"
+        fi
+
+        if ! grep -q 'django.contrib.sessions.backends.cache' /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "sed -i'' -r -e '/^#SESSION_ENGINE/a\SESSION_ENGINE = 'django.contrib.sessions.backends.cache''"
+        fi
+
+        if ! grep -q "#'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache'" /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "sed -i 's/'\''BACKEND'\''/#&/g' /etc/openstack-dashboard/local_settings.py"
+            run_cmd "sed -i'' -r -e '/#'\''BACKEND'\''/a\        '\''BACKEND'\'': '\''django.core.cache.backends.memcached.MemcachedCache'\'',' /etc/openstack-dashboard/local_settings.py"
+        fi
+
+        if ! grep -q "#'LOCATION'" /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "sed -i 's/'\''LOCATION'\''/#&/g' /etc/openstack-dashboard/local_settings.py"
+            run_cmd "sed -i'' -r -e '/#'\''LOCATION'\''/a\        '\''LOCALTION'\'': '\''controller:11211'\''' /etc/openstack-dashboard/local_settings.py"
+        fi
+
+        if ! grep -q 'Asia/Seoul' /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "sed -i 's/TIME_ZONE = \"UTC\"/#&\nTIME_ZONE = \"Asia\/Seoul\"/g' /etc/openstack-dashboard/local_settings.py"
+        fi
+
+        if ! grep -q 'OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT' /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "cat <<EOF >>/etc/openstack-dashboard/local_settings.py
+
+OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = \"Default\"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = \"user\"
+EOF"
+        fi
+
+        if ! grep -q 'OPENSTACK_API_VERSIONS' /etc/openstack-dashboard/local_settings.py; then
+            run_cmd "cat <<EOF >>/etc/openstack-dashboard/local_settings.py
+
+OPENSTACK_API_VERSIONS = {
+    \"identity\": 3,
+    \"image\": 2,
+    \"volume\": 3,
+}
+EOF"
+        fi
+
+        if ! grep -q 'OPENSTACK_NEUTRON_NETWORK' /etc/openstack-dashboard/local_settings.py; then
+run_cmd "cat <<EOF >>/etc/openstack-dashboard/local_settings.py
+ 
+OPENSTACK_NEUTRON_NETWORK = {
+    'enable_router': False,
+    'enable_quotas': False,
+    'enable_ipv6': False,
+    'enable_distributed_router': False,
+    'enable_ha_router': False,
+    'enable_fip_topology_check': False,
+}
+EOF"
+        fi
+
+        run_cmd "systemctl restart apache2"
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            exit 1
+        fi
+
+    else
+        exit 1
+    fi
+}
+
+function remove_openstack() {
+    if [ ${SVR_MODE} == "controller" ]; then
+
+        ### Neutron 서비스 종료
+        disable_svc "neutron-openvswitch-agent" "neutron-dhcp-agent" "neutron-l3-agent" "neutron-server" "neutron-ovs-cleanup" "neutron-metadata-agent"
+        if [ $? -eq 0 ]; then
+            remove_pkg "neutron-openvswitch-agent" "neutron-dhcp-agent" "neutron-l3-agent" "neutron-server" "neutron-metadata-agent" "python3-neutronclient"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/pycadf/neutron_api_audit_map.conf"
+                    "/etc/logrotate.d/neutron-common"
+                    "/etc/systemd/system/neutron-dhcp-agent.service"
+                    "/etc/systemd/system/neutron-openvswitch-agent.service"
+                    "/etc/systemd/system/neutron-metadata-agent.service"
+                    "/etc/systemd/system/neutron-l3-agent.service"
+                    "/etc/systemd/system/neutron-server.service"
+                    "/etc/systemd/system/neutron-ovs-cleanup.service"
+                    "/etc/neutron"
+                    "/etc/sudoers.d/neutron_sudoers"
+                    "/etc/init.d/neutron-l3-agent"
+                    "/etc/init.d/neutron-dhcp-agent"
+                    "/etc/init.d/neutron-server"
+                    "/etc/init.d/neutron-openvswitch-agent"
+                    "/etc/init.d/neutron-ovs-cleanup"
+                    "/etc/init.d/neutron-metadata-agent"
+                    "/etc/default/neutron-server"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-dhcp-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-openvswitch-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-metadata-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-l3-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-server.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/neutron-ovs-cleanup.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-dhcp-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-openvswitch-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-metadata-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-l3-agent.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-server.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/neutron-ovs-cleanup.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-openvswitch-agent.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-ovs-cleanup.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-dhcp-agent.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-server.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-metadata-agent.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/neutron-l3-agent.service.dsh-also"
+                    "/var/lib/neutron"
+                    "/var/cache/neutron"
+                    "/var/log/neutron"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### Nova 서비스 종료
+        disable_svc "nova-conductor" "nova-api" "nova-scheduler" "nova-novncproxy"
+        if [ $? -eq 0 ]; then
+            remove_pkg "nova-conductor" "nova-api" "nova-scheduler" "nova-novncproxy" "python3-novaclient"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/rc2.d/K01nova-api"
+                    "/etc/rc2.d/K01nova-conductor"
+                    "/etc/rc2.d/K01nova-scheduler"
+                    "/etc/rc5.d/K01nova-api"
+                    "/etc/rc5.d/K01nova-conductor"
+                    "/etc/rc5.d/K01nova-scheduler"
+                    "/etc/pycadf/nova_api_audit_map.conf"
+                    "/etc/logrotate.d/nova-common"
+                    "/etc/systemd/system/nova-conductor.service"
+                    "/etc/systemd/system/nova-scheduler.service"
+                    "/etc/systemd/system/nova-api.service"
+                    "/etc/rc3.d/K01nova-api"
+                    "/etc/rc3.d/K01nova-conductor"
+                    "/etc/rc3.d/K01nova-scheduler"
+                    "/etc/rc1.d/K01nova-api"
+                    "/etc/rc1.d/K01nova-conductor"
+                    "/etc/rc1.d/K01nova-scheduler"
+                    "/etc/rc4.d/K01nova-api"
+                    "/etc/rc4.d/K01nova-conductor"
+                    "/etc/rc4.d/K01nova-scheduler"
+                    "/etc/sudoers.d/nova_sudoers"
+                    "/etc/rc0.d/K01nova-api"
+                    "/etc/rc0.d/K01nova-conductor"
+                    "/etc/rc0.d/K01nova-scheduler"
+                    "/etc/nova"
+                    "/etc/init.d/nova-scheduler"
+                    "/etc/init.d/nova-api"
+                    "/etc/init.d/nova-conductor"
+                    "/etc/rc6.d/K01nova-api"
+                    "/etc/rc6.d/K01nova-conductor"
+                    "/etc/rc6.d/K01nova-scheduler"
+                    "/var/lib/systemd/deb-systemd-helper-masked/nova-conductor.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/nova-scheduler.service"
+                    "/var/lib/systemd/deb-systemd-helper-masked/nova-api.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/nova-conductor.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/nova-scheduler.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/nova-api.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/nova-scheduler.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/nova-api.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/nova-conductor.service.dsh-also"
+                    "/var/lib/nova"
+                    "/var/lib/dpkg/info/nova-api.postrm"
+                    "/var/lib/dpkg/info/nova-scheduler.postrm"
+                    "/var/lib/dpkg/info/nova-conductor.postrm"
+                    "/var/lib/dpkg/info/nova-conductor.list"
+                    "/var/lib/dpkg/info/nova-scheduler.list"
+                    "/var/lib/dpkg/info/nova-api.list"
+                    "/var/lib/dpkg/info/nova-common.list"
+                    "/var/cache/apt/archives/nova-common_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/apt/archives/python3-nova_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/apt/archives/nova-novncproxy_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/apt/archives/nova-api_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/apt/archives/nova-scheduler_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/apt/archives/nova-conductor_3%3a25.2.1-0ubuntu2.3_all.deb"
+                    "/var/cache/nova"
+                    "/var/log/nova"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### Glance 서비스 종료
+        disable_svc "glance-api"
+        if [ $? -eq 0 ]; then
+            remove_pkg "glance" "python3-glance-client"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/rc2.d/K01glance-api"
+                    "/etc/rc5.d/K01glance-api"
+                    "/etc/pycadf/glance_api_audit_map.conf"
+                    "/etc/glance"
+                    "/etc/logrotate.d/glance-common"
+                    "/etc/systemd/system/glance-api.service"
+                    "/etc/rc3.d/K01glance-api"
+                    "/etc/rc1.d/K01glance-api"
+                    "/etc/rc4.d/K01glance-api"
+                    "/etc/sudoers.d/glance_sudoers"
+                    "/etc/rc0.d/K01glance-api"
+                    "/etc/init.d/glance-api"
+                    "/etc/rc6.d/K01glance-api"
+                    "/var/lib/glance"
+                    "/var/lib/systemd/deb-systemd-helper-masked/glance-api.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/glance-api.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/glance-api.service.dsh-also"
+                    "/var/lib/dpkg/info/python3-glance-store.list"
+                    "/var/lib/dpkg/info/glance-common.list"
+                    "/var/lib/dpkg/info/glance-api.postrm"
+                    "/var/lib/dpkg/info/glance-api.list"
+                    "/var/lib/dpkg/info/glance-common.postrm"
+                    "/var/cache/apt/archives/python3-glance-store_4.7.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/apt/archives/glance-common_2%3a28.0.1-0ubuntu1.2~cloud0_all.deb"
+                    "/var/cache/apt/archives/glance-api_2%3a28.0.1-0ubuntu1.2~cloud0_all.deb"
+                    "/var/cache/apt/archives/python3-glance_2%3a28.0.1-0ubuntu1.2~cloud0_all.deb"
+                    "/var/cache/apt/archives/glance_2%3a28.0.1-0ubuntu1.2~cloud0_all.deb"
+                    "/var/cache/apt/archives/python3-glanceclient_1%3a4.4.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/glance"
+                    "/var/log/glance"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### Keystoen, Placement, Horizon 서비스 종료
+        disable_svc "apache2"
+        if [ $? -eq 0 ]; then
+            remove_pkg "placement-api" "keystone" "python3-openstackclient" "python3-keystoneauth1" "python3-keystoneclient"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/logrotate.d/placement-common"
+                    "/etc/placement"
+                    "/var/lib/placement"
+                    "/var/lib/dpkg/info/placement-common.list"
+                    "/var/lib/dpkg/info/placement-api.list"
+                    "/var/lib/dpkg/info/placement-api.postrm"
+                    "/etc/logrotate.d/keystone-common"
+                    "/etc/keystone"
+                    "/var/lib/keystone"
+                    "/var/lib/dpkg/info/keystone.list"
+                    "/var/lib/dpkg/info/keystone.postrm"
+                    "/var/lib/dpkg/info/keystone-common.list"
+                    "/var/lib/dpkg/info/keystone-common.postrm"
+                    "/var/cache/apt/archives/keystone_2%3a25.0.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/apt/archives/keystone-common_2%3a25.0.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/apt/archives/python3-keystone_2%3a25.0.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/apt/archives/python3-keystonemiddleware_10.6.0-0ubuntu1~cloud0_all.deb"
+                    "/var/cache/apt/archives/python3-keystoneauth1_5.6.0-0ubuntu1~cloud0_all.deb"
+                    "/var/log/keystone"
+                    "/etc/rc2.d/S01apache2"
+                    "/etc/rc2.d/K01apache-htcacheclean"
+                    "/etc/rc5.d/S01apache2"
+                    "/etc/rc5.d/K01apache-htcacheclean"
+                    "/etc/apache2"
+                    "/etc/logrotate.d/apache2"
+                    "/etc/systemd/system/multi-user.target.wants/apache2.service"
+                    "/etc/rc3.d/S01apache2"
+                    "/etc/rc3.d/K01apache-htcacheclean"
+                    "/etc/cron.daily/apache2"
+                    "/etc/ufw/applications.d/apache2"
+                    "/etc/ufw/applications.d/apache2-utils.ufw.profile"
+                    "/etc/rc1.d/K01apache-htcacheclean"
+                    "/etc/rc1.d/K01apache2"
+                    "/etc/rc4.d/S01apache2"
+                    "/etc/rc4.d/K01apache-htcacheclean"
+                    "/etc/rc0.d/K01apache-htcacheclean"
+                    "/etc/rc0.d/K01apache2"
+                    "/etc/init.d/apache-htcacheclean"
+                    "/etc/init.d/apache2"
+                    "/etc/apparmor.d/abstractions/apache2-common"
+                    "/etc/rc6.d/K01apache-htcacheclean"
+                    "/etc/rc6.d/K01apache2"
+                    "/etc/default/apache-htcacheclean"
+                    "/var/lib/apache2"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/apache2.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/apache2.service.dsh-also"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/apache-htcacheclean.service.dsh-also"
+                    "/var/lib/dpkg/info/apache2-bin.md5sums"
+                    "/var/lib/dpkg/info/apache2.postrm"
+                    "/var/lib/dpkg/info/apache2.conffiles"
+                    "/var/lib/dpkg/info/apache2.preinst"
+                    "/var/lib/dpkg/info/apache2-utils.list"
+                    "/var/lib/dpkg/info/apache2-data.md5sums"
+                    "/var/lib/dpkg/info/libapache2-mod-wsgi-py3.postrm"
+                    "/var/lib/dpkg/info/apache2-bin.list"
+                    "/var/lib/dpkg/info/libapache2-mod-wsgi-py3.list"
+                    "/var/lib/dpkg/info/apache2-data.list"
+                    "/var/lib/dpkg/info/apache2.postinst"
+                    "/var/lib/dpkg/info/apache2.md5sums"
+                    "/var/lib/dpkg/info/apache2.list"
+                    "/var/lib/dpkg/info/apache2.prerm"
+                    "/var/lib/dpkg/info/apache2-utils.md5sums"
+                    "/var/cache/apt/archives/libapache2-mod-wsgi-py3_4.9.0-1ubuntu0.1_amd64.deb"
+                    "/var/cache/apt/archives/apache2-data_2.4.52-1ubuntu4.12_all.deb"
+                    "/var/cache/apt/archives/apache2_2.4.52-1ubuntu4.12_amd64.deb"
+                    "/var/cache/apt/archives/apache2-bin_2.4.52-1ubuntu4.12_amd64.deb"
+                    "/var/cache/apt/archives/apache2-utils_2.4.52-1ubuntu4.12_amd64.deb"
+                    "/var/cache/apache2"
+                    "/var/log/apache2"
+                    "/var/crash/apache2.0.crash"
+                    "/usr/sbin/apache2"
+                    "/usr/sbin/apache2ctl"
+                    "/usr/sbin/apachectl"
+                    "/usr/lib/apache2"
+                    "/usr/lib/systemd/system/apache2@.service"
+                    "/usr/lib/systemd/system/apache2.service"
+                    "/usr/lib/systemd/system/apache-htcacheclean.service"
+                    "/usr/lib/systemd/system/apache-htcacheclean@.service"
+                    "/usr/share/bug/apache2"
+                    "/usr/share/bug/apache2-bin"
+                    "/usr/share/apache2"
+                    "/usr/share/doc/apache2"
+                    "/usr/share/doc/apache2-bin"
+                    "/usr/share/doc/apache2-utils"
+                    "/usr/share/doc/apache2-data"
+                    "/run/apache2"
+                    "/run/systemd/propagate/apache2.service"
+                    "/run/lock/apache2"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### ETCD 서비스 종료
+        disable_svc "etcd"
+        if [ $? -eq 0 ]; then
+            remove_pkg "etcd"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/var/lib/systemd/deb-systemd-helper-masked/etcd.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/etcd.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/etcd2.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/etcd.service.dsh-also"
+                    "/var/lib/dpkg/info/etcd-server.postrm"
+                    "/var/lib/dpkg/info/etcd-server.list"
+                    "/var/lib/etcd"
+                    "/etc/rc2.d/K01etcd"
+                    "/etc/rc5.d/K01etcd"
+                    "/etc/systemd/system/etcd.service"
+                    "/etc/rc3.d/K01etcd"
+                    "/etc/rc1.d/K01etcd"
+                    "/etc/rc4.d/K01etcd"
+                    "/etc/rc0.d/K01etcd"
+                    "/etc/init.d/etcd"
+                    "/etc/rc6.d/K01etcd"
+                    "/etc/default/etcd"
+                    "/etc/default/etcd.org"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### RabbitMQ 서비스 종료
+        disable_svc "rabbitmq-server"
+        if [ $? -eq 0 ]; then
+            remove_pkg "rabbitmq-server"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/rc2.d/K01rabbitmq-server"
+                    "/etc/rc5.d/K01rabbitmq-server"
+                    "/etc/logrotate.d/rabbitmq-server"
+                    "/etc/systemd/system/rabbitmq-server.service"
+                    "/etc/rc3.d/K01rabbitmq-server"
+                    "/etc/filebeat/modules.d/rabbitmq.yml.disabled"
+                    "/etc/rc1.d/K01rabbitmq-server"
+                    "/etc/rc4.d/K01rabbitmq-server"
+                    "/etc/rc0.d/K01rabbitmq-server"
+                    "/etc/init.d/rabbitmq-server"
+                    "/etc/rabbitmq"
+                    "/etc/rabbitmq/rabbitmq-env.conf"
+                    "/etc/rc6.d/K01rabbitmq-server"
+                    "/etc/default/rabbitmq-server"
+                    "/var/lib/systemd/deb-systemd-helper-masked/rabbitmq-server.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/rabbitmq-server.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/rabbitmq-server.service.dsh-also"
+                    "/var/lib/dpkg/info/rabbitmq-server.postrm"
+                    "/var/lib/dpkg/info/rabbitmq-server.list"
+                    "/var/lib/rabbitmq"
+                    "/var/log/rabbitmq"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### Memcache 서비스 종료
+        disable_svc "memcached"
+        if [ $? -eq 0 ]; then
+            remove_pkg "memcached" "python3-memcache"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/rc2.d/K01memcached"
+                    "/etc/rc5.d/K01memcached"
+                    "/etc/memcached.conf"
+                    "/etc/systemd/system/memcached.service"
+                    "/etc/rc3.d/K01memcached"
+                    "/etc/rc1.d/K01memcached"
+                    "/etc/rc4.d/K01memcached"
+                    "/etc/rc0.d/K01memcached"
+                    "/etc/init.d/memcached"
+                    "/etc/rc6.d/K01memcached"
+                    "/etc/default/memcached"
+                    "/var/lib/systemd/deb-systemd-helper-masked/memcached.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/memcached.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/memcached.service.dsh-also"
+                    "/var/lib/dpkg/info/memcached.postrm"
+                    "/var/lib/dpkg/info/memcached.list"
+                    "/run/memcached"
+                    "/run/systemd/propagate/memcached.service"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+        ### MariaDB 서비스 종료
+        disable_svc "mariadb"
+        if [ $? -eq 0 ]; then
+            remove_pkg "mariadb-server" "python3-pymysql"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                _CMD=(
+                    "/etc/mysql"
+                    "/etc/rc2.d/K01mariadb"
+                    "/etc/rc5.d/K01mariadb"
+                    "/etc/logcheck/ignore.d.server/mariadb-server-10_6"
+                    "/etc/logcheck/ignore.d.workstation/mariadb-server-10_6"
+                    "/etc/logcheck/ignore.d.paranoid/mariadb-server-10_6"
+                    "/etc/logrotate.d/mariadb"
+                    "/etc/systemd/system/multi-user.target.wants/mariadb.service"
+                    "/etc/systemd/system/mariadb.service"
+                    "/etc/rc3.d/K01mariadb"
+                    "/etc/rc1.d/K01mariadb"
+                    "/etc/rc4.d/K01mariadb"
+                    "/etc/rc0.d/K01mariadb"
+                    "/etc/init.d/mariadb"
+                    "/etc/apparmor.d/usr.sbin.mariadbd"
+                    "/etc/rc6.d/K01mariadb"
+                    "/var/lib/systemd/deb-systemd-helper-masked/mariadb.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/mariadb.service"
+                    "/var/lib/systemd/deb-systemd-helper-enabled/mariadb.service.dsh-also"
+                    "/var/lib/dpkg/info/mariadb-client-10.6.list"
+                    "/var/lib/dpkg/info/mariadb-common.postrm"
+                    "/var/lib/dpkg/info/mariadb-server-10.6.list"
+                    "/var/lib/dpkg/info/mariadb-server-10.6.postrm"
+                    "/var/lib/dpkg/info/mariadb-client-10.6.postrm"
+                    "/var/lib/dpkg/info/mariadb-common.list"
+                    "/var/cache/apt/archives/mariadb-server-core-10.6_1%3a10.6.18-0ubuntu0.22.04.1_amd64.deb"
+                    "/var/cache/apt/archives/mariadb-server-10.6_1%3a10.6.18-0ubuntu0.22.04.1_amd64.deb"
+                    "/var/cache/apt/archives/mariadb-client-10.6_1%3a10.6.18-0ubuntu0.22.04.1_amd64.deb"
+                    "/var/cache/apt/archives/mariadb-client-core-10.6_1%3a10.6.18-0ubuntu0.22.04.1_amd64.deb"
+                    "/var/cache/apt/archives/mariadb-server_1%3a10.6.18-0ubuntu0.22.04.1_all.deb"
+                    "/var/cache/apt/archives/mariadb-common_1%3a10.6.18-0ubuntu0.22.04.1_all.deb"
+                    "/var/crash/mariadb-common.0.crash"
+                    "/run/systemd/propagate/mariadb.service"
+                )
+                for _PATH in ${_CMD[@]}; do
+                    if [[ -d ${_PATH} ]] || [[ -f ${_PATH} ]]; then
+                        run_cmd "rm -rf ${_PATH}"
+                    fi
+                done
+            fi
+        else
+            exit 1
+        fi
+
+    elif [ ${SVR_MODE} == "compute" ]; then
+        ### Neutron 서비스 종료
+        disable_svc "neutron-openvswitch-agent"
+        if [ $? -eq 0 ]; then
+            remove_pkg "neutron-openvswitch-agent"
+            if [ $? -eq 1 ]; then
+                exit 1
+            fi
+        else
+            exit 1
+        fi
+
+        ### Nova 서비스 종료
+        disable_svc "nova-compute"
+        if [ $? -eq 0 ]; then
+            remove_pkg "nova-compute"
+            if [ $? -eq 1 ]; then
+                exit 1
+            else
+                remove_pkg "python3-openstackclient"
+                if [ $? -eq 1 ]; then
+                    exit 1
+                fi
+            fi
+        else
+            exit 1
         fi
     fi
 }
@@ -958,30 +1579,53 @@ main() {
         ;;
     esac
 
+    run_cmd "cat <<EOF >${SCRIPT_DIR}/adminrc
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=\"${ADMIN_PASS}\"
+export OS_AUTH_URL=http://controller:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+EOF"
+    if [ -f ${SCRIPT_DIR}/adminrc ]; then
+        run_cmd "source ${SCRIPT_DIR}/adminrc"
+    fi
 
-    if [ ${SVR_MODE} == "controller" ]; then
-        # install_ntp
-        # install_openstack_client
-        # install_mysql
-        # install_mysql_python
-        # install_rabbitmq
-        # install_memcached
-        # install_etcd
-        # install_keystone
-        # install_glance
-        # install_placement
-        # install_nova
-        install_neutron
 
-    elif [ ${SVR_MODE} == "compute" ]; then
-        install_ntp
-        install_openstack_client
-        install_nova
-        install_neutron
+    if [ ${MODE} == "install" ]; then
+        if [ ${SVR_MODE} == "controller" ]; then
+            install_ntp
+            install_openstack_client
+            install_mysql
+            install_mysql_python
+            install_rabbitmq
+            install_memcached
+            install_etcd
+            install_keystone
+            install_glance
+            install_placement
+            install_nova
+            install_neutron
+            install_horizon
 
+        elif [ ${SVR_MODE} == "compute" ]; then
+            install_ntp
+            install_openstack_client
+            install_nova
+            install_neutron
+
+        else
+            log_msg "FAIL" "Please check option -m [ supported 'controller' or 'compute' ]."
+            help_usage
+            exit 1
+        fi
+
+    elif [ ${MODE} == "remove" ]; then
+        remove_openstack
     else
-        log_msg "FAIL" "Please check option -m [ supported 'controller' or 'compute' ]."
-        help_usage
+        log_msg "ERROR" "Bug abort."
         exit 1
     fi
 }

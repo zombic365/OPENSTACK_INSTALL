@@ -28,7 +28,7 @@ function check_db() {
     fi
 }
 
-function check_svc() {
+function enable_svc() {
     _SVC_NAME=($@)
     _SVC_NAME_NUM=${#_SVC_NAME[@]}
 
@@ -41,18 +41,111 @@ function check_svc() {
 
         if ! systemctl list-unit-files --state enabled |grep -wq ${_SVC}; then
             run_cmd "systemctl enable --now ${_SVC}"
+            if [ $? -eq 0 ]; then
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+            else
+                log_msg "WARR" "Service enable fail."
+                exit 1
+            fi
+        else
+            if ! systemctl is-active ${_SVC} |grep -wq active; then
+                run_cmd "systemctl start ${_SVC}"
+                if [ $? -eq 0 ]; then
+                    _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                else
+                    log_msg "WARR" "Service start fail."
+                    return 1
+                fi
+            else
+                log_msg "SKIP" "Already start ${_SVC}"
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                continue
+            fi
         fi
         
+        ### 위 액션에 대한 서비스 종료 한번 더 수행
+        ### 만약 이미 종료된 상태라면 정상적으로 종료된 것으로 간주
         if ! systemctl is-active ${_SVC} |grep -wq active; then
-            run_cmd "systemctl restart ${_SVC}"
+            run_cmd "systemctl start ${_SVC}"
             if [ $? -eq 0 ]; then
-                _SVC_CHECK=0
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
             else
                 log_msg "WARR" "Service start fail."
                 return 1
             fi
         else
+            # log_msg "SKIP" "Already stop ${_SVC}"
+            _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+        fi
+    done
+}
+
+function disable_svc() {
+    _SVC_NAME=($@)
+    _SVC_NAME_NUM=${#_SVC_NAME[@]}
+
+    for _SVC in ${_SVC_NAME[@]}; do
+        ### _SVC_CHECK 값이 2 이면서, _SVC_NAME_NUM 값이 0에 도달하면 스크립트 종료
+        ### _SVC_CHECK 값이 2가 아닌데, 이미 _SVC_NAME_NUM 값에 도달한다면 스크립트 종료
+        if [[ ${_SVC_CHECK} -eq 2 ]] && [[ ${_SVC_NAME_NUM} -eq 0 ]]; then
+            return 0
+        elif [[ ${_SVC_CHECK} -ne 2 ]] && [[ ${_SVC_NAME_NUM} -eq 0 ]]; then
+            exit 1
+        else
             _SVC_CHECK=0
+            _SVC_NAME_NUM=$(expr ${_SVC_NAME_NUM} - 1)
+        fi
+
+        ### /lib/systemd/system 내 등록된 service 파일 제거 및 서비스 종료
+        if ! systemctl list-unit-files --state disabled |grep -wq ${_SVC}; then
+            if ! systemctl status ${_SVC} >/dev/null 2>&1; then
+                log_msg "WARR" "Service not found ${_SVC}."
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                continue
+            fi
+
+            run_cmd "systemctl disable --now ${_SVC}"
+            if [ $? -eq 0 ]; then
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+            else
+                if ! systemctl status ${_SVC} >/dev/null 2>&1; then
+                    log_msg "WARR" "Service not found ${_SVC}."
+                    _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                    continue
+                else
+                    log_msg "WARR" "Service disable fail."
+                    exit 1
+                fi
+            fi
+        else
+            if ! systemctl is-active ${_SVC} |grep -wq inactive; then
+                run_cmd "systemctl stop ${_SVC}"
+                if [ $? -eq 0 ]; then
+                    _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                else
+                    log_msg "WARR" "Service stop fail."
+                    return 1
+                fi
+            else
+                log_msg "SKIP" "Already stop ${_SVC}"
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+                continue
+            fi
+        fi
+        
+        ### 위 액션에 대한 서비스 종료 한번 더 수행
+        ### 만약 이미 종료된 상태라면 정상적으로 종료된 것으로 간주
+        if ! systemctl is-active ${_SVC} |grep -wq inactive; then
+            run_cmd "systemctl stop ${_SVC}"
+            if [ $? -eq 0 ]; then
+                _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
+            else
+                log_msg "WARR" "Service stop fail."
+                return 1
+            fi
+        else
+            # log_msg "SKIP" "Already stop ${_SVC}"
+            _SVC_CHECK=$(expr ${_SVC_CHECK} + 1)
         fi
     done
 }
@@ -61,8 +154,9 @@ function check_pkg() {
     _PKG_NAME=($@)
     _PKG_NAME_NUM=${#_PKG_NAME[@]}
 
+    _CHECK_NUM=0
     for _PKG in ${_PKG_NAME[@]}; do
-        _PKG_NAME_NUM=$(expr ${_PKG_NAME_NUM} - 1)
+        # _PKG_NAME_NUM=$(expr ${_PKG_NAME_NUM} - 1)
         case ${PKG_CMD[1]} in
             rpm )
                 if ! ${PKG_CMD[1]} -q ${_PKG} >/dev/null 2>&1; then            
@@ -83,7 +177,8 @@ function check_pkg() {
         if [ ${_install} -eq 0 ]; then
             run_cmd "${PKG_CMD[0]} install -y ${_PKG}"
             if [ $? -eq 0 ]; then
-                if [ ${_PKG_NAME_NUM} -eq 0 ]; then 
+                _CHECK_NUM=$(expr ${_CHECK_NUM} + 1)
+                if [ ${_PKG_NAME_NUM} -eq ${_CHECK_NUM} ]; then
                     return 0
                 else
                     continue
@@ -92,9 +187,74 @@ function check_pkg() {
                 log_msg "ERROR" "Package install fail ${_PKG}."
                 exit 1
             fi
+
         elif [ ${_install} -eq 1 ]; then
             log_msg "SKIP" "Already install ${_PKG}."
-            if [ ${_PKG_NAME_NUM} -eq 0 ]; then 
+            _CHECK_NUM=$(expr ${_CHECK_NUM} + 1)
+            if [ ${_PKG_NAME_NUM} -eq ${_CHECK_NUM} ]; then
+                return 1
+            else
+                continue
+            fi
+        else
+            log_msg "ERROR" "Aboart bug"
+            exit 1
+        fi
+    done
+}
+
+function remove_pkg() {
+    _PKG_NAME=($@)
+    _PKG_NAME_NUM=${#_PKG_NAME[@]}
+
+    _CHECK_NUM=0
+    for _PKG in ${_PKG_NAME[@]}; do
+        # _PKG_NAME_NUM=$(expr ${_PKG_NAME_NUM} - 1)
+        case ${PKG_CMD[1]} in
+            rpm )
+                if ! ${PKG_CMD[1]} -q ${_PKG} >/dev/null 2>&1; then            
+                    _install=0
+                else
+                    _install=1
+                fi
+            ;;
+            dpkg )
+                if ! ${PKG_CMD[1]} -s ${_PKG} >/dev/null 2>&1; then
+                    _install=1
+                else
+                    if ! ${PKG_CMD[1]} -s ${_PKG} |grep -wq 'deinstall ok config-files'; then
+                        _install=0
+                    else
+                        _install=1
+                    fi
+                fi
+            ;;
+        esac
+
+        if [ ${_install} -eq 0 ]; then
+            run_cmd "apt purge -y ${_PKG}"
+            if [ $? -eq 0 ]; then
+                run_cmd "apt autoremove -y ${_PKG}"
+                if [ $? -eq 0 ]; then
+                    _CHECK_NUM=$(expr ${_CHECK_NUM} + 1)
+                    if [ ${_PKG_NAME_NUM} -eq ${_CHECK_NUM} ]; then
+                        return 0
+                    else
+                        continue
+                    fi
+                else
+                    log_msg "ERROR" "Package Uninstall fail ${_PKG}."
+                    exit 1
+                fi
+            else
+                log_msg "ERROR" "Package Uninstall fail ${_PKG}."
+                exit 1
+            fi
+
+        elif [ ${_install} -eq 1 ]; then
+            log_msg "SKIP" "Already Uninstall ${_PKG}."
+            _CHECK_NUM=$(expr ${_CHECK_NUM} + 1)
+            if [ ${_PKG_NAME_NUM} -eq ${_CHECK_NUM} ]; then
                 return 0
             else
                 continue
